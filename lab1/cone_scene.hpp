@@ -15,34 +15,44 @@ public:
     void SetSpinSpeed(float s) { spinSpeed_ = s; }
     float SpinSpeed() const { return spinSpeed_; }
 
-    // ==== НОВОЕ: управление камерой ====
-    // перемещение в ЛОКАЛЬНЫХ осях камеры (x – вправо, y – вверх, z – вперёд)
+    // управление камерой
     void MoveCameraLocal(float dx, float dy, float dz);
-    // вращение камеры вокруг yaw/pitch (рад)
     void RotateCamera(float dYaw, float dPitch);
-    // сброс в начальное положение
     void ResetCamera();
-    // ================================
 
 private:
     ComPtr<ID3D12RootSignature> rootSig;
     ComPtr<ID3D12PipelineState>  pso;
-    ComPtr<ID3D12Resource> vb, ib, camCB, instBuf;
-    ComPtr<ID3D12DescriptorHeap> srvHeap;
+
+    // конусы
+    ComPtr<ID3D12Resource> vb;
+    ComPtr<ID3D12Resource> ib;
     D3D12_VERTEX_BUFFER_VIEW vbv{};
     D3D12_INDEX_BUFFER_VIEW  ibv{};
-    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
     UINT indexCount = 0;
 
+    // пол
+    ComPtr<ID3D12Resource> floorVB;
+    ComPtr<ID3D12Resource> floorIB;
+    D3D12_VERTEX_BUFFER_VIEW floorVBV{};
+    D3D12_INDEX_BUFFER_VIEW  floorIBV{};
+    UINT floorIndexCount = 0;
+
+    // буферы
+    ComPtr<ID3D12Resource> camCB;
+    ComPtr<ID3D12Resource> instBuf;
+    ComPtr<ID3D12DescriptorHeap> srvHeap;
+    D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
+
+    // анимация
     float angle_ = 0.0f;
     float spinSpeed_ = 1.2f;
 
+    // проекция и камера
     DirectX::XMMATRIX proj_ = DirectX::XMMatrixIdentity();
     float baseAspect_ = 16.0f / 9.0f;
 
-    // ==== НОВОЕ: параметры камеры ====
-    DirectX::XMFLOAT3 camPos_{ 0.0f, 0.6f, -3.0f }; // как раньше в LookAt
-    float camYaw_ = 0.0f;                         // вокруг Y
-    float camPitch_ = 0.0f;                         // вокруг X
-    // ================================
+    DirectX::XMFLOAT3 camPos_{ 0.0f, 0.6f, -3.0f };
+    float camYaw_ = 0.0f;
+    float camPitch_ = 0.0f;
 };
