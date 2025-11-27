@@ -12,7 +12,7 @@ public:
     /// Инициализирует устройство, очередь, список, свопчейн и синхронизацию для окна hwnd с заданным размером.
     bool Init(HWND hwnd, UINT width, UINT height);
 
-    /// Подготавливает кадр: ресетит аллокатор и список, задает RTV и возвращает текущий дескриптор RTV.
+    /// Подготавливает кадр: ресетит аллокатор и список, задает RTV/DSV и возвращает текущий дескриптор RTV.
     D3D12_CPU_DESCRIPTOR_HANDLE BeginFrame();
 
     /// Завершает кадр: закрывает список, отправляет в очередь и презентует свопчейн.
@@ -50,6 +50,7 @@ public:
 
 private:
     bool CreateSwapchainAndRTVs(HWND hwnd);
+    bool CreateDepthResources(UINT w, UINT h);
 
     UINT width = 0, height = 0;
     UINT frameIndex = 0, rtvInc = 0;
@@ -60,6 +61,11 @@ private:
 
     ComPtr<ID3D12DescriptorHeap> rtvHeap;
     ComPtr<ID3D12Resource> buffers[2];
+
+    // depth-buffer
+    ComPtr<ID3D12DescriptorHeap> dsvHeap;
+    ComPtr<ID3D12Resource> depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
 
     ComPtr<ID3D12CommandAllocator> alloc;
     ComPtr<ID3D12GraphicsCommandList> list;

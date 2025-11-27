@@ -37,26 +37,47 @@ bool ConeScene::Init(D3D12Core& core) {
     CHECK_HR("Read PS", D3DReadFileToBlob(L"shaders/ConesPS.cso", &ps));
 
     D3D12_INPUT_ELEMENT_DESC il[] = {
-        {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT,0, 0,  D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
-        {"NORMAL",  0,DXGI_FORMAT_R32G32B32_FLOAT,0,12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,0},
+    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,
+      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12,
+      D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
+
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
     psoDesc.InputLayout = { il, _countof(il) };
     psoDesc.pRootSignature = rootSig.Get();
     psoDesc.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
     psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+
+    // растеризатор
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    { D3D12_DEPTH_STENCIL_DESC ds{}; ds.DepthEnable = FALSE; ds.StencilEnable = FALSE; psoDesc.DepthStencilState = ds; }
+    // если хочешь видеть и внутреннюю сторону конуса – оставь NONE,
+    // если только снаружи – поставь BACK:
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    // ГЛУБИНА ВКЛЮЧЕНА
+    D3D12_DEPTH_STENCIL_DESC ds{};
+    ds.DepthEnable = TRUE;
+    ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    ds.StencilEnable = FALSE;
+    psoDesc.DepthStencilState = ds;
+
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.DSVFormat = DXGI_FORMAT_UNKNOWN;
+
+    // формат depth-буфера
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
     psoDesc.SampleDesc.Count = 1;
+
     CHECK_HR("CreateGraphicsPipelineState",
         device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pso)));
 
+    // геометрию не трогаем
     std::vector<ConeVertex> verts;
     std::vector<uint32_t>   idx;
     BuildConeMesh(128, verts, idx);
