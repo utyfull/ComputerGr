@@ -2,6 +2,7 @@
 #include <windowsx.h>
 #include <algorithm>
 #include <cstdio>
+#include <chrono>
 
 #include <dwin.hpp>
 #include "d3d12_core.hpp"
@@ -27,6 +28,73 @@ enum class DragKind { None, Left, Right, Top, Bottom };
 static DragKind gDrag = DragKind::None;
 static POINT gDragStart{};
 static int gStartL, gStartR, gStartT, gStartB;
+
+// Главное окно: оставляем только R для сброса камеры,
+// движение теперь делаем плавно по времени в тике.
+class ConeMainWindow : public MainWindow {
+protected:
+    LRESULT onMessage(HWND h, UINT m, WPARAM w, LPARAM l) override {
+        switch (m) {
+        case WM_KEYDOWN:
+            if (gScene) {
+                switch (w) {
+                case 'R': // сброс камеры
+                    gScene->ResetCamera();
+                    return 0;
+                default:
+                    break;
+                }
+            }
+            break;
+        }
+        return MainWindow::onMessage(h, m, w, l);
+    }
+};
+
+// Вьюпорт: инвертируем мышь (по Y – "flight mode")
+class ConeViewport : public Viewport {
+public:
+    bool rotating = false;
+    POINT last{};
+
+protected:
+    LRESULT onMessage(HWND h, UINT m, WPARAM w, LPARAM l) override {
+        switch (m) {
+        case WM_RBUTTONDOWN:
+            SetCapture(h);
+            rotating = true;
+            last.x = GET_X_LPARAM(l);
+            last.y = GET_Y_LPARAM(l);
+            return 0;
+
+        case WM_MOUSEMOVE:
+            if (rotating && (w & MK_RBUTTON) && gScene) {
+                POINT p{ GET_X_LPARAM(l), GET_Y_LPARAM(l) };
+                int dx = p.x - last.x;
+                int dy = p.y - last.y;
+                last = p;
+
+                const float sens = 0.005f;
+                // инвертируем Y относительно предыдущей версии:
+                // было RotateCamera(dx * sens, -dy * sens);
+                gScene->RotateCamera(dx * sens, dy * sens);
+                return 0;
+            }
+            break;
+
+        case WM_RBUTTONUP:
+        case WM_CAPTURECHANGED:
+        case WM_CANCELMODE:
+            if (rotating) {
+                rotating = false;
+                ReleaseCapture();
+            }
+            return 0;
+        }
+
+        return Viewport::onMessage(h, m, w, l);
+    }
+};
 
 static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM, LPARAM) {
     if (m == WM_ERASEBKGND) return 1;
@@ -56,11 +124,14 @@ static LRESULT CALLBACK SplitterProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         SetCapture(h);
         gDragStart = { GET_X_LPARAM(l), GET_Y_LPARAM(l) }; ClientToScreen(h, &gDragStart);
         switch (GetWindowLongPtrW(h, GWLP_USERDATA)) {
-        case 1: gDrag = DragKind::Left; break; case 2: gDrag = DragKind::Right; break;
-        case 3: gDrag = DragKind::Top;  break; case 4: gDrag = DragKind::Bottom; break;
-        default: gDrag = DragKind::None; break;
+        case 1: gDrag = DragKind::Left;   break;
+        case 2: gDrag = DragKind::Right;  break;
+        case 3: gDrag = DragKind::Top;    break;
+        case 4: gDrag = DragKind::Bottom; break;
+        default: gDrag = DragKind::None;  break;
         }
-        gStartL = dockL; gStartR = dockR; gStartT = dockT; gStartB = dockB; return 0;
+        gStartL = dockL; gStartR = dockR; gStartT = dockT; gStartB = dockB;
+        return 0;
     case WM_MOUSEMOVE:
         if (GetCapture() != h || gDrag == DragKind::None) return 0;
         {
@@ -69,10 +140,14 @@ static LRESULT CALLBACK SplitterProc(HWND h, UINT m, WPARAM w, LPARAM l) {
             RECT rc; GetClientRect(GetParent(h), &rc);
             int cx = (int)(rc.right - rc.left), cy = (int)(rc.bottom - rc.top);
             switch (gDrag) {
-            case DragKind::Left:   dockL = std::clamp(gStartL + dx, MIN_PANEL, std::max(0, cx - dockR - SPLIT - MIN_PANEL)); break;
-            case DragKind::Right:  dockR = std::clamp(gStartR - dx, MIN_PANEL, std::max(0, cx - dockL - SPLIT - MIN_PANEL)); break;
-            case DragKind::Top:    dockT = std::clamp(gStartT + dy, MIN_PANEL, std::max(0, cy - dockB - SPLIT - MIN_PANEL)); break;
-            case DragKind::Bottom: dockB = std::clamp(gStartB - dy, MIN_PANEL, std::max(0, cy - dockT - SPLIT - MIN_PANEL)); break;
+            case DragKind::Left:
+                dockL = std::clamp(gStartL + dx, MIN_PANEL, std::max(0, cx - dockR - SPLIT - MIN_PANEL)); break;
+            case DragKind::Right:
+                dockR = std::clamp(gStartR - dx, MIN_PANEL, std::max(0, cx - dockL - SPLIT - MIN_PANEL)); break;
+            case DragKind::Top:
+                dockT = std::clamp(gStartT + dy, MIN_PANEL, std::max(0, cy - dockB - SPLIT - MIN_PANEL)); break;
+            case DragKind::Bottom:
+                dockB = std::clamp(gStartB - dy, MIN_PANEL, std::max(0, cy - dockT - SPLIT - MIN_PANEL)); break;
             default: break;
             }
             PostMessageW(GetParent(h), WM_SIZE, 0, MAKELPARAM(cx, cy));
@@ -89,7 +164,7 @@ static LRESULT CALLBACK SplitterProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     constexpr int W = 1600, H = 900;
 
-    MainWindow mainWin;
+    ConeMainWindow mainWin;
     if (!mainWin.create(L"DWin.Main", L"D3D12 Cone",
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE, 0,
         100, 100, W, H)) return 1;
@@ -119,16 +194,16 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
     slider.create(L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE, 0, 16, 24, 340, 26, topBox);
     CheckBox pause; pause.create(topBox, 370, 24, 120, 24, L"Pause");
 
-    Viewport vp;
+    ConeViewport vp;
     vp.create(
-        L"DWin.Viewport",    // class
-        L"",                 // title
+        L"DWin.Viewport",
+        L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-        0,                   // exStyle
-        0, 0,                // x, y
-        100, 100,            // w, h
-        gMain,               // parent HWND
-        &vp                  // createParam = this (или nullptr)
+        0,
+        0, 0,
+        100, 100,
+        gMain,
+        &vp
     );
 
     RECT r0; GetClientRect(gMain, &r0);
@@ -172,7 +247,31 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
 
     App app;
     return app.run([&]() {
+        using clock = std::chrono::steady_clock;
+        static auto prev = clock::now();
+        auto now = clock::now();
+        float dt = std::chrono::duration<float>(now - prev).count();
+        prev = now;
+
         if (pause.checked()) return true;
+
+        // Плавное движение камеры: опрашиваем состояние клавиш каждый кадр
+        if (gScene) {
+            const float moveSpeed = 2.0f; // единиц в секунду
+            float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+
+            if (GetAsyncKeyState('W') & 0x8000) dz += moveSpeed * dt;
+            if (GetAsyncKeyState('S') & 0x8000) dz -= moveSpeed * dt;
+            if (GetAsyncKeyState('A') & 0x8000) dx -= moveSpeed * dt;
+            if (GetAsyncKeyState('D') & 0x8000) dx += moveSpeed * dt;
+            if (GetAsyncKeyState(VK_SPACE) & 0x8000) dy += moveSpeed * dt;
+            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) dy -= moveSpeed * dt;
+
+            if (dx != 0.0f || dy != 0.0f || dz != 0.0f) {
+                gScene->MoveCameraLocal(dx, dy, dz);
+            }
+        }
+
         auto rtv = core.BeginFrame();
         scene.Render(core, rtv);
         core.EndFrame();

@@ -15,6 +15,15 @@ public:
     void SetSpinSpeed(float s) { spinSpeed_ = s; }
     float SpinSpeed() const { return spinSpeed_; }
 
+    // ==== НОВОЕ: управление камерой ====
+    // перемещение в ЛОКАЛЬНЫХ осях камеры (x – вправо, y – вверх, z – вперёд)
+    void MoveCameraLocal(float dx, float dy, float dz);
+    // вращение камеры вокруг yaw/pitch (рад)
+    void RotateCamera(float dYaw, float dPitch);
+    // сброс в начальное положение
+    void ResetCamera();
+    // ================================
+
 private:
     ComPtr<ID3D12RootSignature> rootSig;
     ComPtr<ID3D12PipelineState>  pso;
@@ -30,4 +39,10 @@ private:
 
     DirectX::XMMATRIX proj_ = DirectX::XMMatrixIdentity();
     float baseAspect_ = 16.0f / 9.0f;
+
+    // ==== НОВОЕ: параметры камеры ====
+    DirectX::XMFLOAT3 camPos_{ 0.0f, 0.6f, -3.0f }; // как раньше в LookAt
+    float camYaw_ = 0.0f;                         // вокруг Y
+    float camPitch_ = 0.0f;                         // вокруг X
+    // ================================
 };

@@ -127,16 +127,53 @@ bool ConeScene::Init(D3D12Core& core) {
     return true;
 }
 
+void ConeScene::MoveCameraLocal(float dx, float dy, float dz) {
+    // локальный вектор смещения
+    XMVECTOR delta = XMVectorSet(dx, dy, dz, 0.0f);
+
+    // поворачиваем его в мировое пространство по текущим yaw/pitch
+    XMMATRIX rot = XMMatrixRotationRollPitchYaw(camPitch_, camYaw_, 0.0f);
+    delta = XMVector3Transform(delta, rot);
+
+    XMVECTOR pos = XMLoadFloat3(&camPos_);
+    pos = XMVectorAdd(pos, delta);
+    XMStoreFloat3(&camPos_, pos);
+}
+
+void ConeScene::RotateCamera(float dYaw, float dPitch) {
+    camYaw_ += dYaw;
+    camPitch_ += dPitch;
+
+    // ограничиваем pitch, чтобы не переворачивалась камера
+    const float limit = XM_PIDIV2 - 0.01f;
+    if (camPitch_ > limit) camPitch_ = limit;
+    if (camPitch_ < -limit) camPitch_ = -limit;
+}
+
+void ConeScene::ResetCamera() {
+    camPos_ = XMFLOAT3{ 0.0f, 0.6f, -3.0f };
+    camYaw_ = 0.0f;
+    camPitch_ = 0.0f;
+}
+
 void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     auto* list = core.CL();
 
     // View * Proj (Proj фиксирован по базовому аспекту)
-    XMMATRIX view = XMMatrixLookAtLH(
-        XMVectorSet(0.0f, 0.6f, -3.0f, 1.0f),
-        XMVectorSet(0.0f, 0.3f, 0.0f, 1.0f),
-        XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f));
+    XMMATRIX camRot = XMMatrixRotationRollPitchYaw(camPitch_, camYaw_, 0.0f);
+    XMMATRIX camTrans = XMMatrixTranslation(camPos_.x, camPos_.y, camPos_.z);
+
+    // world-матрица камеры (из камеры в мир)
+    XMMATRIX camWorld = camRot * camTrans;
+
+    // view = inverse(cameraWorld)
+    XMMATRIX view = XMMatrixInverse(nullptr, camWorld);
+
     XMMATRIX vpT = XMMatrixTranspose(view * proj_);
-    void* pCam = nullptr; camCB->Map(0, nullptr, &pCam); memcpy(pCam, &vpT, sizeof(vpT)); camCB->Unmap(0, nullptr);
+    void* pCam = nullptr;
+    camCB->Map(0, nullptr, &pCam);
+    memcpy(pCam, &vpT, sizeof(vpT));
+    camCB->Unmap(0, nullptr);
 
     // вписанный прямоугольник под baseAspect_: viewport полный, crop ножницами
     int VW = core.Width(), VH = core.Height();
