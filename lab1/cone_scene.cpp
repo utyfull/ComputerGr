@@ -87,18 +87,26 @@ bool ConeScene::Init(D3D12Core& core) {
     CHECK_HR("Create CameraCB", device->CreateCommittedResource(&heapUpload, D3D12_HEAP_FLAG_NONE, &cbDesc,
         D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&camCB)));
 
+    // Буфер с начальными world-матрицами инстансов (одинаковый масштаб и высота для всех)
     struct InstanceData { float m[16]; };
     auto xm2arrT = [](const XMMATRIX& M, float* out16) {
         XMFLOAT4X4 t; XMStoreFloat4x4(&t, XMMatrixTranspose(M)); memcpy(out16, &t, sizeof(t));
         };
     InstanceData inst[3];
 
-    XMFLOAT3 s0{ 0.08f,0.22f,0.08f }, s1{ 0.14f,0.35f,0.14f }, s2{ 0.10f,0.28f,0.10f };
-    float xL = -0.9f, xR = +0.9f, z = -0.5f, y2 = +0.45f;
-    XMMATRIX w0 = XMMatrixScaling(s0.x, s0.y, s0.z) * XMMatrixTranslation(xL, 0.0f, z);
-    XMMATRIX w1 = XMMatrixScaling(s1.x, s1.y, s1.z) * XMMatrixTranslation(xR, 0.0f, z);
-    XMMATRIX w2 = XMMatrixScaling(s2.x, s2.y, s2.z) * XMMatrixTranslation(0.0f, y2, z);
-    xm2arrT(w0, inst[0].m); xm2arrT(w1, inst[1].m); xm2arrT(w2, inst[2].m);
+    // ОДИНАКОВЫЙ масштаб
+    XMFLOAT3 s{ 0.12f, 0.30f, 0.12f };
+    // ОДИНАКОВАЯ высота по Y
+    float y = 0.0f;
+    float xL = -0.9f, xR = +0.9f, z = -0.5f;
+
+    XMMATRIX w0 = XMMatrixScaling(s.x, s.y, s.z) * XMMatrixTranslation(xL, y, z);
+    XMMATRIX w1 = XMMatrixScaling(s.x, s.y, s.z) * XMMatrixTranslation(xR, y, z);
+    XMMATRIX w2 = XMMatrixScaling(s.x, s.y, s.z) * XMMatrixTranslation(0.0f, y, z);
+
+    xm2arrT(w0, inst[0].m);
+    xm2arrT(w1, inst[1].m);
+    xm2arrT(w2, inst[2].m);
 
     auto instDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(inst));
     CHECK_HR("Create InstBuf", device->CreateCommittedResource(&heapUpload, D3D12_HEAP_FLAG_NONE, &instDesc,
@@ -146,18 +154,28 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     float dt = std::chrono::duration<float>(now - prev).count(); prev = now;
     angle_ += dt * spinSpeed_;
 
+    // Обновляем world-матрицы инстансов:
+    // одинаковый масштаб, одинаковое вращение и одинаковая высота
     struct InstanceData { float m[16]; };
     auto xm2arrT = [](const XMMATRIX& M, float* out16) {
         XMFLOAT4X4 t; XMStoreFloat4x4(&t, XMMatrixTranspose(M)); memcpy(out16, &t, sizeof(t));
         };
 
-    XMFLOAT3 s0{ 0.08f,0.22f,0.08f }, s1{ 0.14f,0.35f,0.14f }, s2{ 0.10f,0.28f,0.10f };
-    float xL = -0.9f, xR = +0.9f, z = -0.5f, y2 = +0.45f;
-    XMMATRIX w0 = XMMatrixScaling(s0.x, s0.y, s0.z) * XMMatrixRotationY(angle_) * XMMatrixTranslation(xL, 0.0f, z);
-    XMMATRIX w1 = XMMatrixScaling(s1.x, s1.y, s1.z) * XMMatrixRotationY(-angle_ * 0.8f) * XMMatrixTranslation(xR, 0.0f, z);
-    XMMATRIX w2 = XMMatrixScaling(s2.x, s2.y, s2.z) * XMMatrixRotationY(angle_ * 1.5f) * XMMatrixTranslation(0.0f, y2, z);
+    XMFLOAT3 s{ 0.12f, 0.30f, 0.12f };
+    float y = 0.0f;
+    float xL = -0.9f, xR = +0.9f, z = -0.5f;
 
-    InstanceData inst[3]; xm2arrT(w0, inst[0].m); xm2arrT(w1, inst[1].m); xm2arrT(w2, inst[2].m);
+    XMMATRIX rot = XMMatrixRotationY(angle_);
+
+    XMMATRIX w0 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(xL, y, z);
+    XMMATRIX w1 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(xR, y, z);
+    XMMATRIX w2 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(0.0f, y, z);
+
+    InstanceData inst[3];
+    xm2arrT(w0, inst[0].m);
+    xm2arrT(w1, inst[1].m);
+    xm2arrT(w2, inst[2].m);
+
     void* pInst = nullptr; instBuf->Map(0, nullptr, &pInst); memcpy(pInst, inst, sizeof(inst)); instBuf->Unmap(0, nullptr);
 
     ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() }; list->SetDescriptorHeaps(1, heaps);
