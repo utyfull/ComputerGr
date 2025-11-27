@@ -38,7 +38,7 @@ private:
     D3D12_INDEX_BUFFER_VIEW  floorIBV{};
     UINT floorIndexCount = 0;
 
-    // буферы
+    // общие буферы
     ComPtr<ID3D12Resource> camCB;
     ComPtr<ID3D12Resource> instBuf;
     ComPtr<ID3D12DescriptorHeap> srvHeap;
@@ -48,7 +48,7 @@ private:
     float angle_ = 0.0f;
     float spinSpeed_ = 1.2f;
 
-    // проекция и камера
+    // камера / проекция
     DirectX::XMMATRIX proj_ = DirectX::XMMatrixIdentity();
     float baseAspect_ = 16.0f / 9.0f;
 
