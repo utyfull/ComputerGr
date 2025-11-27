@@ -17,27 +17,35 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     o.posW = wp.xyz;
     o.obj = v.pos;
     o.tag = inst.tag.x;
+
+    // материал
+    o.matAlbedo = inst.mat.albedo;
+    o.matSpec = inst.mat.specColor;
+    o.matShin = inst.mat.shininess;
+
     return o;
 }
 
 //====================== МОДЕЛЬ БЛИНН–ФОНГА ====================
 
-float3 BlinnPhong(float3 N, float3 V, float3 L,
-                  float3 lightColor, float3 albedo,
-                  float shininess, float specScale)
+float3 BlinnPhong(
+    float3 N, float3 V, float3 L,
+    float3 lightColor,
+    float3 albedo, float3 specColor,
+    float shininess, float specScale)
 {
     float ndotl = saturate(dot(N, L));
     if (ndotl <= 0.0f)
-        return 0.0.xxx;
+        return float3(0.0, 0.0, 0.0);
 
     float3 H = normalize(L + V);
     float ndoth = saturate(dot(N, H));
 
     float diffuse = ndotl;
-    float specular = pow(ndoth, shininess) * specScale;
+    float specular = pow(ndoth, shininess);
 
     float3 diffCol = albedo * lightColor * diffuse;
-    float3 specCol = lightColor * specular;
+    float3 specCol = specColor * lightColor * (specular * specScale);
 
     return diffCol + specCol;
 }
@@ -74,24 +82,32 @@ float4 PSMain(VSOut i) : SV_TARGET
     float3 N = normalize(i.nrmW);
     float3 V = normalize(camPos - i.posW);
 
-    // --- материал (albedo) ---
-    float3 albedo;
     bool isFloor = (i.tag > 0.5f && i.tag < 1.5f);
+    bool isCone = (i.tag < 0.5f);
 
-    if (isFloor)   // пол
+    // материал из InstanceData
+    float3 matAlbedo = i.matAlbedo;
+    float3 matSpec = i.matSpec;
+    float shininess = i.matShin;
+
+    // --- Альбедо с учётом узора ---
+    float3 albedo;
+
+    if (isFloor)
     {
-        float2 p = i.obj.xz * 10.0; // более мелкие клетки
+        // шахматка в объектном пространстве пола
+        float2 p = i.obj.xz * 10.0; // мелкие клетки
         float2 cell = floor(p);
         float check = fmod(abs(cell.x + cell.y), 2.0);
 
-        float3 c0 = float3(0.15, 0.15, 0.15);
-        float3 c1 = float3(0.90, 0.90, 0.90);
+        float3 c0 = matAlbedo * 0.25; // тёмная клетка
+        float3 c1 = matAlbedo; // светлая клетка
         albedo = lerp(c0, c1, check);
     }
     else // конусы
     {
-        const float3 base = float3(0.93, 0.35, 0.15);
-        const float3 stripeCol = float3(0.05, 0.05, 0.95);
+        float3 base = matAlbedo;
+        float3 stripeCol = matAlbedo * float3(0.10, 0.10, 2.50); // синяя полоса
 
         float ang = atan2(i.obj.z, i.obj.x);
         float stripeWidth = 0.15;
@@ -100,18 +116,18 @@ float4 PSMain(VSOut i) : SV_TARGET
         albedo = lerp(base, stripeCol, m);
     }
 
-    // --- параметры блика для материалов ---
-    float shininess = isFloor ? 16.0f : 32.0f;
-    float specScaleDir = isFloor ? 0.0f : 1.0f; // пол — без блика от направленного света
-
-    // --- освещение ---
+    // --- базовый ambient ---
     float3 color = ambientColor * albedo;
 
     // 1) направленный свет
     {
         float3 Ld = normalize(-dirLightDir);
-        color += BlinnPhong(N, V, Ld, dirLightColor, albedo,
-                            shininess, specScaleDir);
+        float specScaleDir = isFloor ? 0.2f : 0.7f;
+        color += BlinnPhong(
+            N, V, Ld,
+            dirLightColor,
+            albedo, matSpec,
+            shininess, specScaleDir);
     }
 
     // 2) прожекторы
@@ -133,27 +149,30 @@ float4 PSMain(VSOut i) : SV_TARGET
 
         // направление из источника к точке
         float3 Lp = normalize(i.posW - lightPos);
-        float3 L = -Lp;
+        float3 L = -Lp; // из точки к источнику
 
-        // угол между направлением прожектора и лучом к точке
+        // угол между осью прожектора и лучом
         float cosTheta = dot(spotDir, Lp);
         float spotFactor = saturate((cosTheta - cosOuter) / (cosInner - cosOuter));
 
-        // сужаем пятно (чтобы светило "под собой")
+        // сужаем пятно, но с мягкими краями
         spotFactor = pow(spotFactor, 4.0f);
 
         if (spotFactor <= 0.0f)
             continue;
 
         float dist = length(lightPos - i.posW);
-        float att = 1.0f / (1.0f + attK * dist * dist); // 1 / (1 + k * d^2)
+        float att = 1.0f / (1.0f + attK * dist * dist); // закон обратных квадратов
 
-        // у пола блик от прожектора слабее, чем у конусов
         float specScaleSpot = isFloor ? 0.25f : 0.8f;
-        float3 lp = BlinnPhong(N, V, L, lightCol, albedo,
-                               shininess, specScaleSpot);
 
-        color += lp * (spotFactor * att);
+        float3 contrib = BlinnPhong(
+            N, V, L,
+            lightCol,
+            albedo, matSpec,
+            shininess, specScaleSpot);
+
+        color += contrib * (spotFactor * att);
     }
 
     return float4(color, 1.0);

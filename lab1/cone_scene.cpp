@@ -13,25 +13,41 @@
 
 using namespace DirectX;
 
-// структура должна совпадать с CameraCB в HLSL
+// ===== CPU-версия CameraCB (должна совпадать с HLSL CameraCB) =====
+
 struct CameraCBData {
-    DirectX::XMFLOAT4X4 viewProj;
+    XMFLOAT4X4 viewProj;
 
-    DirectX::XMFLOAT3 camPos;
-    float             _pad0;
+    XMFLOAT3 camPos;
+    float    _pad0;
 
-    DirectX::XMFLOAT3 ambientColor;
-    float             _pad1;
+    XMFLOAT3 ambientColor;
+    float    _pad1;
 
-    DirectX::XMFLOAT3 dirLightDir;
-    float             _pad2;
+    XMFLOAT3 dirLightDir;
+    float    _pad2;
 
-    DirectX::XMFLOAT3 dirLightColor;
-    float             _pad3;
+    XMFLOAT3 dirLightColor;
+    float    _pad3;
 
-    DirectX::XMFLOAT4 spotPosRange[2];
-    DirectX::XMFLOAT4 spotDirInner[2];
-    DirectX::XMFLOAT4 spotColorOuter[2];
+    XMFLOAT4 spotPosRange[2];
+    XMFLOAT4 spotDirInner[2];
+    XMFLOAT4 spotColorOuter[2];
+};
+
+// ===== CPU-версия материала и InstanceData (должны совпадать с HLSL) =====
+
+struct MaterialCPU {
+    XMFLOAT3 albedo;
+    float    shininess;
+    XMFLOAT3 specColor;
+    float    _pad;
+};
+
+struct InstanceDataCPU {
+    XMFLOAT4X4 world;
+    XMFLOAT4   tag;
+    MaterialCPU mat;
 };
 
 bool ConeScene::Init(D3D12Core& core) {
@@ -79,23 +95,27 @@ bool ConeScene::Init(D3D12Core& core) {
     psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 
+    // Растеризатор: пока БЕЗ отсечения, чтобы ничего не пропало.
+    // Когда всё заработает, можем включить BACK.
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
-    {
-        D3D12_DEPTH_STENCIL_DESC ds{};
-        ds.DepthEnable = TRUE;
-        ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-        ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-        ds.StencilEnable = FALSE;
-        psoDesc.DepthStencilState = ds;
-    }
+    // Глубина
+    D3D12_DEPTH_STENCIL_DESC ds{};
+    ds.DepthEnable = TRUE;                         // включаем Z-buffer
+    ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;   // пишем глубину
+    ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    ds.StencilEnable = FALSE;
+    psoDesc.DepthStencilState = ds;
 
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT; // если в core нет DSV — можно поставить UNKNOWN
+
+    // ОБЯЗАТЕЛЬНО совпадает с форматом depth-буфера в Core
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
     psoDesc.SampleDesc.Count = 1;
 
     CHECK_HR("CreateGraphicsPipelineState",
@@ -206,7 +226,7 @@ bool ConeScene::Init(D3D12Core& core) {
         device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&srvHeap)));
     srvGpu = srvHeap->GetGPUDescriptorHandleForHeapStart();
 
-    // ---------- Camera CB (256 байт) ----------
+    // ---------- Camera CB (достаточно 256 байт) ----------
     auto cbDesc = CD3DX12_RESOURCE_DESC::Buffer(256);
     CHECK_HR("Create CameraCB",
         device->CreateCommittedResource(
@@ -214,54 +234,13 @@ bool ConeScene::Init(D3D12Core& core) {
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&camCB)));
 
-    // ---------- InstanceData: 3 конуса + пол + 3 маркера = 7 ----------
-    struct InstanceDataCPU { float m[16]; float tag[4]; };
-
-    InstanceDataCPU inst[7]{};
-
-    auto xm2arrT = [](const DirectX::XMMATRIX& M, float* out16) {
-        DirectX::XMFLOAT4X4 t;
-        DirectX::XMStoreFloat4x4(&t, DirectX::XMMatrixTranspose(M));
-        std::memcpy(out16, &t, sizeof(t));
-        };
-
-    DirectX::XMFLOAT3 s{ 0.12f, 0.30f, 0.12f };
-    float y = 0.0f;
-    float xL = -0.9f, xR = +0.9f, z = -0.5f;
-
-    DirectX::XMMATRIX w0 = DirectX::XMMatrixScaling(s.x, s.y, s.z) *
-        DirectX::XMMatrixTranslation(xL, y, z);
-    DirectX::XMMATRIX w1 = DirectX::XMMatrixScaling(s.x, s.y, s.z) *
-        DirectX::XMMatrixTranslation(xR, y, z);
-    DirectX::XMMATRIX w2 = DirectX::XMMatrixScaling(s.x, s.y, s.z) *
-        DirectX::XMMatrixTranslation(0.0f, y, z);
-
-    xm2arrT(w0, inst[0].m); inst[0].tag[0] = 0.0f; // конусы
-    xm2arrT(w1, inst[1].m); inst[1].tag[0] = 0.0f;
-    xm2arrT(w2, inst[2].m); inst[2].tag[0] = 0.0f;
-
-    DirectX::XMMATRIX wf = DirectX::XMMatrixScaling(20.0f, 1.0f, 20.0f) *
-        DirectX::XMMatrixTranslation(0.0f, -0.3f, 0.0f);
-    xm2arrT(wf, inst[3].m); inst[3].tag[0] = 1.0f; // пол
-
-    // маркеры инициализируем чем-нибудь, всё равно будут переписаны в Render
-    xm2arrT(DirectX::XMMatrixIdentity(), inst[4].m); inst[4].tag[0] = 2.0f;
-    xm2arrT(DirectX::XMMatrixIdentity(), inst[5].m); inst[5].tag[0] = 3.0f;
-    xm2arrT(DirectX::XMMatrixIdentity(), inst[6].m); inst[6].tag[0] = 4.0f;
-
-    auto instDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(inst));
+    // ---------- InstanceData buffer: 3 конуса + пол + 3 маркера = 7 ----------
+    auto instDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(InstanceDataCPU) * 7);
     CHECK_HR("Create InstBuf",
         device->CreateCommittedResource(
             &heapUpload, D3D12_HEAP_FLAG_NONE, &instDesc,
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&instBuf)));
-
-    {
-        void* p2 = nullptr;
-        instBuf->Map(0, nullptr, &p2);
-        std::memcpy(p2, inst, sizeof(inst));
-        instBuf->Unmap(0, nullptr);
-    }
 
     D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
     srv.Format = DXGI_FORMAT_UNKNOWN;
@@ -278,14 +257,15 @@ bool ConeScene::Init(D3D12Core& core) {
     baseAspect_ = (core.Height() > 0)
         ? float(core.Width()) / float(core.Height())
         : (16.0f / 9.0f);
-    float vfov = DirectX::XMConvertToRadians(60.0f);
-    proj_ = DirectX::XMMatrixPerspectiveFovLH(vfov, baseAspect_, 0.1f, 100.0f);
+    float vfov = XMConvertToRadians(60.0f);
+    proj_ = XMMatrixPerspectiveFovLH(vfov, baseAspect_, 0.1f, 100.0f);
 
     ResetCamera();
     return true;
 }
 
-// камера
+// ---------- управление камерой ----------
+
 void ConeScene::MoveCameraLocal(float dx, float dy, float dz) {
     XMVECTOR delta = XMVectorSet(dx, dy, dz, 0.0f);
     XMMATRIX rot = XMMatrixRotationRollPitchYaw(camPitch_, camYaw_, 0.0f);
@@ -306,14 +286,15 @@ void ConeScene::RotateCamera(float dYaw, float dPitch) {
 }
 
 void ConeScene::ResetCamera() {
-    camPos_ = XMFLOAT3{ 0.0f, 1.0f, -4.0f }; // чуть дальше, чтобы видеть пол
+    camPos_ = XMFLOAT3{ 0.0f, 1.0f, -4.0f };
     camYaw_ = 0.0f;
     camPitch_ = XMConvertToRadians(-15.0f);
 }
 
+// ---------- Render ----------
+
 void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     auto* list = core.CL();
-    using namespace DirectX;
 
     // ---------- View / Proj ----------
     XMMATRIX camRot = XMMatrixRotationRollPitchYaw(camPitch_, camYaw_, 0.0f);
@@ -337,14 +318,13 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
         XMStoreFloat3(&cbd.dirLightDir, d);
         cbd.dirLightColor = XMFLOAT3(0.6f, 0.6f, 0.7f);
 
-        // Позиция маркера — вдоль -d, подальше от сцены
+        // Позиция маркера — вдоль -d
         XMVECTOR pos = XMVectorScale(-d, 8.0f);
         XMStoreFloat3(&dirLightPos, pos);
     }
 
     // Прожекторы: два «фонарика» под собой, разнесены
     {
-        // узкий луч
         float innerDeg = 12.0f;
         float outerDeg = 18.0f;
         float cosInner = cosf(XMConvertToRadians(innerDeg));
@@ -352,28 +332,30 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
 
         XMVECTOR spotDir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // строго вниз
 
-        // левый, ярче, ближе к центру
+        // левый (ярче)
         {
             spotPos[0] = XMFLOAT3(-3.0f, 2.0f, -1.0f);
-            cbd.spotPosRange[0] = XMFLOAT4(spotPos[0].x, spotPos[0].y, spotPos[0].z,
-                0.25f); // k для 1/(1 + k d^2)
+            cbd.spotPosRange[0] = XMFLOAT4(
+                spotPos[0].x, spotPos[0].y, spotPos[0].z,
+                0.25f); // коэффициент k для 1/(1+k d^2)
 
             XMFLOAT3 dir3;
             XMStoreFloat3(&dir3, spotDir);
             cbd.spotDirInner[0] = XMFLOAT4(dir3.x, dir3.y, dir3.z, cosInner);
-            cbd.spotColorOuter[0] = XMFLOAT4(1.0f, 0.95f, 0.8f, cosOuter); // базовый цвет (ярче будет в PS)
+            cbd.spotColorOuter[0] = XMFLOAT4(1.0f, 0.95f, 0.8f, cosOuter);
         }
 
-        // правый, дальше и слабее
+        // правый (дальше и слабее)
         {
             spotPos[1] = XMFLOAT3(3.0f, 2.5f, 1.0f);
-            cbd.spotPosRange[1] = XMFLOAT4(spotPos[1].x, spotPos[1].y, spotPos[1].z,
+            cbd.spotPosRange[1] = XMFLOAT4(
+                spotPos[1].x, spotPos[1].y, spotPos[1].z,
                 0.25f);
 
             XMFLOAT3 dir3;
             XMStoreFloat3(&dir3, spotDir);
             cbd.spotDirInner[1] = XMFLOAT4(dir3.x, dir3.y, dir3.z, cosInner);
-            cbd.spotColorOuter[1] = XMFLOAT4(0.8f, 0.9f, 1.0f, cosOuter); // базовый цвет (в PS ещё уменьшаем яркость)
+            cbd.spotColorOuter[1] = XMFLOAT4(0.8f, 0.9f, 1.0f, cosOuter);
         }
     }
 
@@ -385,7 +367,7 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
         camCB->Unmap(0, nullptr);
     }
 
-    // ---------- viewport crop по aspect ----------
+    // ---------- viewport crop под baseAspect_ ----------
     int VW = core.Width();
     int VH = core.Height();
     float currentAspect = (VH > 0) ? float(VW) / float(VH) : baseAspect_;
@@ -402,22 +384,35 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     D3D12_RECT sc{ bx, by, bx + bw, by + bh };
 
     // ---------- Время / вращение конусов ----------
-    using clock = std::chrono::steady_clock;
-    static auto prev = clock::now();
-    auto now = clock::now();
+    using Clock = std::chrono::steady_clock;
+    static Clock::time_point prev = Clock::now();
+    Clock::time_point now = Clock::now();
     float dt = std::chrono::duration<float>(now - prev).count();
     prev = now;
     angle_ += dt * spinSpeed_;
 
     // ---------- InstanceData на кадр ----------
-    struct InstanceDataCPU { float m[16]; float tag[4]; };
     InstanceDataCPU inst[7];
 
-    auto xm2arrT = [](const XMMATRIX& M, float* out16) {
-        XMFLOAT4X4 t;
-        XMStoreFloat4x4(&t, XMMatrixTranspose(M));
-        std::memcpy(out16, &t, sizeof(t));
+    auto xm2worldT = [](const XMMATRIX& M, XMFLOAT4X4& dst) {
+        XMStoreFloat4x4(&dst, XMMatrixTranspose(M));
         };
+
+    // Материалы
+    MaterialCPU coneMat{};
+    coneMat.albedo = XMFLOAT3(0.93f, 0.35f, 0.15f);
+    coneMat.shininess = 32.0f;
+    coneMat.specColor = XMFLOAT3(1.0f, 1.0f, 1.0f);
+
+    MaterialCPU floorMat{};
+    floorMat.albedo = XMFLOAT3(0.85f, 0.85f, 0.85f);
+    floorMat.shininess = 16.0f;
+    floorMat.specColor = XMFLOAT3(0.2f, 0.2f, 0.2f);
+
+    MaterialCPU markerMat{};
+    markerMat.albedo = XMFLOAT3(1.0f, 1.0f, 1.0f);
+    markerMat.shininess = 1.0f;
+    markerMat.specColor = XMFLOAT3(0.0f, 0.0f, 0.0f);
 
     // Конусы
     XMFLOAT3 s{ 0.12f, 0.30f, 0.12f };
@@ -426,35 +421,57 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
 
     XMMATRIX rot = XMMatrixRotationY(angle_);
 
-    XMMATRIX w0 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(xL, y, z);
-    XMMATRIX w1 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(xR, y, z);
-    XMMATRIX w2 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(0.0f, y, z);
+    XMMATRIX w0 = XMMatrixScaling(s.x, s.y, s.z) *
+        rot *
+        XMMatrixTranslation(xL, y, z);
+    XMMATRIX w1 = XMMatrixScaling(s.x, s.y, s.z) *
+        rot *
+        XMMatrixTranslation(xR, y, z);
+    XMMATRIX w2 = XMMatrixScaling(s.x, s.y, s.z) *
+        rot *
+        XMMatrixTranslation(0.0f, y, z);
 
-    xm2arrT(w0, inst[0].m); inst[0].tag[0] = 0.0f; // конусы
-    xm2arrT(w1, inst[1].m); inst[1].tag[0] = 0.0f;
-    xm2arrT(w2, inst[2].m); inst[2].tag[0] = 0.0f;
+    xm2worldT(w0, inst[0].world);
+    inst[0].tag = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
+    inst[0].mat = coneMat;
+
+    xm2worldT(w1, inst[1].world);
+    inst[1].tag = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
+    inst[1].mat = coneMat;
+
+    xm2worldT(w2, inst[2].world);
+    inst[2].tag = XMFLOAT4(0.0f, 0.0f, 0.0f, 0.0f);
+    inst[2].mat = coneMat;
 
     // Пол
     XMMATRIX wf = XMMatrixScaling(20.0f, 1.0f, 20.0f) *
         XMMatrixTranslation(0.0f, -0.3f, 0.0f);
-    xm2arrT(wf, inst[3].m); inst[3].tag[0] = 1.0f; // пол
+    xm2worldT(wf, inst[3].world);
+    inst[3].tag = XMFLOAT4(1.0f, 0.0f, 0.0f, 0.0f);
+    inst[3].mat = floorMat;
 
     // Маркер направленного света
     XMMATRIX wDir =
         XMMatrixScaling(0.3f, 1.0f, 0.3f) *
         XMMatrixTranslation(dirLightPos.x, dirLightPos.y, dirLightPos.z);
-    xm2arrT(wDir, inst[4].m); inst[4].tag[0] = 2.0f;
+    xm2worldT(wDir, inst[4].world);
+    inst[4].tag = XMFLOAT4(2.0f, 0.0f, 0.0f, 0.0f);
+    inst[4].mat = markerMat;
 
     // Маркеры прожекторов
     XMMATRIX wS0 =
         XMMatrixScaling(0.25f, 1.0f, 0.25f) *
         XMMatrixTranslation(spotPos[0].x, spotPos[0].y, spotPos[0].z);
-    xm2arrT(wS0, inst[5].m); inst[5].tag[0] = 3.0f;
+    xm2worldT(wS0, inst[5].world);
+    inst[5].tag = XMFLOAT4(3.0f, 0.0f, 0.0f, 0.0f);
+    inst[5].mat = markerMat;
 
     XMMATRIX wS1 =
         XMMatrixScaling(0.25f, 1.0f, 0.25f) *
         XMMatrixTranslation(spotPos[1].x, spotPos[1].y, spotPos[1].z);
-    xm2arrT(wS1, inst[6].m); inst[6].tag[0] = 4.0f;
+    xm2worldT(wS1, inst[6].world);
+    inst[6].tag = XMFLOAT4(4.0f, 0.0f, 0.0f, 0.0f);
+    inst[6].mat = markerMat;
 
     {
         void* pInst = nullptr;
@@ -475,7 +492,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
 
     const float clear[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
     list->ClearRenderTargetView(rtv, clear, 0, nullptr);
-    // если используется depth-buffer: ClearDepthStencilView(...)
 
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 

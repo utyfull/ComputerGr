@@ -31,7 +31,7 @@ private:
     D3D12_INDEX_BUFFER_VIEW  ibv{};
     UINT indexCount = 0;
 
-    // пол
+    // пол / маркеры
     ComPtr<ID3D12Resource> floorVB;
     ComPtr<ID3D12Resource> floorIB;
     D3D12_VERTEX_BUFFER_VIEW floorVBV{};
@@ -53,6 +53,6 @@ private:
     float baseAspect_ = 16.0f / 9.0f;
 
     DirectX::XMFLOAT3 camPos_{ 0.0f, 0.6f, -3.0f };
-    float camYaw_ = 0.0f;
-    float camPitch_ = 0.0f;
+    float             camYaw_ = 0.0f;
+    float             camPitch_ = 0.0f;
 };
