@@ -1,7 +1,6 @@
 ﻿#include <windows.h>
 #include <windowsx.h>
 #include <algorithm>
-#include <cstdio>
 #include <chrono>
 
 #include <dwin.hpp>
@@ -13,36 +12,30 @@ using namespace dwin;
 static ConeScene* gScene = nullptr;
 static HWND gMain = nullptr;
 
-static void UpdateTitle() {
+static void UpdateTitle()
+{
     if (!gScene || !gMain) return;
     wchar_t b[128];
     swprintf(b, 128, L"D3D12 Cone | speed=%.2f", gScene->SpinSpeed());
     SetWindowTextW(gMain, b);
 }
 
-static const int SPLIT = 6;
-static const int MIN_PANEL = 48;
-static int dockL = 240, dockR = 240, dockT = 72, dockB = 0;
+// ==== Главное окно (R сбрасывает камеру) ====
 
-enum class DragKind { None, Left, Right, Top, Bottom };
-static DragKind gDrag = DragKind::None;
-static POINT gDragStart{};
-static int gStartL, gStartR, gStartT, gStartB;
-
-// Главное окно: оставляем только R для сброса камеры,
-// движение теперь делаем плавно по времени в тике.
-class ConeMainWindow : public MainWindow {
+class ConeMainWindow : public MainWindow
+{
 protected:
-    LRESULT onMessage(HWND h, UINT m, WPARAM w, LPARAM l) override {
-        switch (m) {
+    LRESULT onMessage(HWND h, UINT m, WPARAM w, LPARAM l) override
+    {
+        switch (m)
+        {
         case WM_KEYDOWN:
-            if (gScene) {
-                switch (w) {
-                case 'R': // сброс камеры
+            if (gScene)
+            {
+                if (w == 'R')
+                {
                     gScene->ResetCamera();
                     return 0;
-                default:
-                    break;
                 }
             }
             break;
@@ -51,15 +44,19 @@ protected:
     }
 };
 
-// Вьюпорт: инвертируем мышь (по Y – "flight mode")
-class ConeViewport : public Viewport {
+// ==== Вьюпорт: правая кнопка мыши крутит камеру ====
+
+class ConeViewport : public Viewport
+{
 public:
-    bool rotating = false;
+    bool  rotating = false;
     POINT last{};
 
 protected:
-    LRESULT onMessage(HWND h, UINT m, WPARAM w, LPARAM l) override {
-        switch (m) {
+    LRESULT onMessage(HWND h, UINT m, WPARAM w, LPARAM l) override
+    {
+        switch (m)
+        {
         case WM_RBUTTONDOWN:
             SetCapture(h);
             rotating = true;
@@ -68,16 +65,15 @@ protected:
             return 0;
 
         case WM_MOUSEMOVE:
-            if (rotating && (w & MK_RBUTTON) && gScene) {
+            if (rotating && (w & MK_RBUTTON) && gScene)
+            {
                 POINT p{ GET_X_LPARAM(l), GET_Y_LPARAM(l) };
                 int dx = p.x - last.x;
                 int dy = p.y - last.y;
                 last = p;
 
                 const float sens = 0.005f;
-                // инвертируем Y относительно предыдущей версии:
-                // было RotateCamera(dx * sens, -dy * sens);
-                gScene->RotateCamera(dx * sens, dy * sens);
+                gScene->RotateCamera(dx * sens, dy * sens); // "flight mode" по Y
                 return 0;
             }
             break;
@@ -85,7 +81,8 @@ protected:
         case WM_RBUTTONUP:
         case WM_CAPTURECHANGED:
         case WM_CANCELMODE:
-            if (rotating) {
+            if (rotating)
+            {
                 rotating = false;
                 ReleaseCapture();
             }
@@ -96,185 +93,245 @@ protected:
     }
 };
 
-static LRESULT CALLBACK PanelProc(HWND h, UINT m, WPARAM, LPARAM) {
-    if (m == WM_ERASEBKGND) return 1;
-    if (m == WM_PAINT) {
-        PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
-        RECT rc; GetClientRect(h, &rc);
-        HBRUSH bg = CreateSolidBrush(RGB(32, 32, 32)); FillRect(dc, &rc, bg); DeleteObject(bg);
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(220, 220, 220));
-        auto op = SelectObject(dc, pen); auto ob = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-        Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
-        SelectObject(dc, op); SelectObject(dc, ob); DeleteObject(pen);
-        EndPaint(h, &ps); return 0;
-    }
-    return DefWindowProcW(h, m, 0, 0);
-}
-
-static LRESULT CALLBACK SplitterProc(HWND h, UINT m, WPARAM w, LPARAM l) {
-    switch (m) {
-    case WM_SETCURSOR:
-        if (LOWORD(l) == HTCLIENT) {
-            LONG_PTR tag = GetWindowLongPtrW(h, GWLP_USERDATA);
-            SetCursor(LoadCursor(nullptr, (tag == 3 || tag == 4) ? IDC_SIZENS : IDC_SIZEWE));
-            return TRUE;
-        }
-        return DefWindowProcW(h, m, w, l);
-    case WM_LBUTTONDOWN:
-        SetCapture(h);
-        gDragStart = { GET_X_LPARAM(l), GET_Y_LPARAM(l) }; ClientToScreen(h, &gDragStart);
-        switch (GetWindowLongPtrW(h, GWLP_USERDATA)) {
-        case 1: gDrag = DragKind::Left;   break;
-        case 2: gDrag = DragKind::Right;  break;
-        case 3: gDrag = DragKind::Top;    break;
-        case 4: gDrag = DragKind::Bottom; break;
-        default: gDrag = DragKind::None;  break;
-        }
-        gStartL = dockL; gStartR = dockR; gStartT = dockT; gStartB = dockB;
-        return 0;
-    case WM_MOUSEMOVE:
-        if (GetCapture() != h || gDrag == DragKind::None) return 0;
-        {
-            POINT p{ GET_X_LPARAM(l), GET_Y_LPARAM(l) }; ClientToScreen(h, &p);
-            int dx = p.x - gDragStart.x, dy = p.y - gDragStart.y;
-            RECT rc; GetClientRect(GetParent(h), &rc);
-            int cx = (int)(rc.right - rc.left), cy = (int)(rc.bottom - rc.top);
-            switch (gDrag) {
-            case DragKind::Left:
-                dockL = std::clamp(gStartL + dx, MIN_PANEL, std::max(0, cx - dockR - SPLIT - MIN_PANEL)); break;
-            case DragKind::Right:
-                dockR = std::clamp(gStartR - dx, MIN_PANEL, std::max(0, cx - dockL - SPLIT - MIN_PANEL)); break;
-            case DragKind::Top:
-                dockT = std::clamp(gStartT + dy, MIN_PANEL, std::max(0, cy - dockB - SPLIT - MIN_PANEL)); break;
-            case DragKind::Bottom:
-                dockB = std::clamp(gStartB - dy, MIN_PANEL, std::max(0, cy - dockT - SPLIT - MIN_PANEL)); break;
-            default: break;
-            }
-            PostMessageW(GetParent(h), WM_SIZE, 0, MAKELPARAM(cx, cy));
-        }
-        return 0;
-    case WM_LBUTTONUP:
-    case WM_CAPTURECHANGED:
-    case WM_CANCELMODE:
-        ReleaseCapture(); gDrag = DragKind::None; SetCursor(LoadCursor(nullptr, IDC_ARROW)); return 0;
-    }
-    return DefWindowProcW(h, m, w, l);
-}
-
-int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int) {
-    constexpr int W = 1600, H = 900;
+int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
+{
+    constexpr int W = 1600;
+    constexpr int H = 900;
+    constexpr int TOP_BAR_H = 150; // высота полоски с контролами
 
     ConeMainWindow mainWin;
-    if (!mainWin.create(L"DWin.Main", L"D3D12 Cone",
-        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE, 0,
-        100, 100, W, H)) return 1;
+    if (!mainWin.create(
+        L"DWin.Main", L"D3D12 Cone",
+        WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_VISIBLE,
+        0,
+        100, 100, W, H))
+        return 1;
+
     gMain = mainWin.hwnd();
 
-    WNDCLASSW wcP{}; wcP.lpfnWndProc = PanelProc; wcP.hInstance = hInst; wcP.lpszClassName = L"DWin.Panel";  RegisterClassW(&wcP);
-    WNDCLASSW wcS{}; wcS.lpfnWndProc = SplitterProc; wcS.hInstance = hInst; wcS.lpszClassName = L"DWin.Split"; RegisterClassW(&wcS);
+    // ===== Верхний группбокс с контролами =====
 
-    const DWORD PANEL_STYLE = WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN;
-    const DWORD SPLIT_STYLE = WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS;
-
-    HWND pnlL = CreateWindowExW(0, L"DWin.Panel", L"", PANEL_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr);
-    HWND pnlR = CreateWindowExW(0, L"DWin.Panel", L"", PANEL_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr);
-    HWND pnlT = CreateWindowExW(0, L"DWin.Panel", L"", PANEL_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr);
-    HWND pnlB = CreateWindowExW(0, L"DWin.Panel", L"", PANEL_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr);
-
-    HWND splL = CreateWindowExW(0, L"DWin.Split", L"", SPLIT_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr); SetWindowLongPtrW(splL, GWLP_USERDATA, 1);
-    HWND splR = CreateWindowExW(0, L"DWin.Split", L"", SPLIT_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr); SetWindowLongPtrW(splR, GWLP_USERDATA, 2);
-    HWND splT = CreateWindowExW(0, L"DWin.Split", L"", SPLIT_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr); SetWindowLongPtrW(splT, GWLP_USERDATA, 3);
-    HWND splB = CreateWindowExW(0, L"DWin.Split", L"", SPLIT_STYLE, 0, 0, 1, 1, gMain, nullptr, hInst, nullptr); SetWindowLongPtrW(splB, GWLP_USERDATA, 4);
-
-    HWND topBox = CreateWindowExW(0, L"BUTTON", L" Controls ",
+    HWND topBox = CreateWindowExW(
+        0, L"BUTTON", L" Controls ",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | BS_GROUPBOX,
-        8, 8, 600, dockT - 16, pnlT, nullptr, hInst, nullptr);
+        8, 8, W - 16, TOP_BAR_H - 16,
+        gMain, nullptr, hInst, nullptr);
 
-    Slider slider; slider.st = { 0.0f, 6.0f, 1.2f };
-    slider.create(L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE, 0, 16, 24, 340, 26, topBox);
-    CheckBox pause; pause.create(topBox, 370, 24, 120, 24, L"Pause");
+    // подписи
+    HWND lblSpeed = CreateWindowExW(
+        0, L"STATIC", L"Spin:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 24, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblAmb = CreateWindowExW(
+        0, L"STATIC", L"Ambient:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 48, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblDir = CreateWindowExW(
+        0, L"STATIC", L"Directional:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 72, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblSpot0 = CreateWindowExW(
+        0, L"STATIC", L"Spot 0:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 96, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblSpot1 = CreateWindowExW(
+        0, L"STATIC", L"Spot 1:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 120, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    // слайдеры
+    Slider sliderSpeed;
+    sliderSpeed.st = { 0.0f, 6.0f, 1.2f };
+    sliderSpeed.create(
+        L"DWin.Slider", L"",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        90, 24, 220, 20,
+        topBox);
+
+    Slider sliderAmbient;
+    sliderAmbient.st = { 0.0f, 3.0f, 1.0f };
+    sliderAmbient.create(
+        L"DWin.Slider", L"",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        90, 48, 220, 20,
+        topBox);
+
+    Slider sliderDir;
+    sliderDir.st = { 0.0f, 3.0f, 1.0f };
+    sliderDir.create(
+        L"DWin.Slider", L"",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        90, 72, 220, 20,
+        topBox);
+
+    Slider sliderSpot0;
+    sliderSpot0.st = { 0.0f, 3.0f, 1.2f }; // как в сцене по умолчанию
+    sliderSpot0.create(
+        L"DWin.Slider", L"",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        90, 96, 220, 20,
+        topBox);
+
+    Slider sliderSpot1;
+    sliderSpot1.st = { 0.0f, 3.0f, 0.5f }; // как в сцене по умолчанию
+    sliderSpot1.create(
+        L"DWin.Slider", L"",
+        WS_CHILD | WS_VISIBLE,
+        0,
+        90, 120, 220, 20,
+        topBox);
+
+    CheckBox pause;
+    pause.create(topBox, 340, 24, 120, 24, L"Pause");
+
+    // ===== Вьюпорт с D3D12 =====
 
     ConeViewport vp;
     vp.create(
-        L"DWin.Viewport",
-        L"",
+        L"DWin.Viewport", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
         0,
-        0, 0,
-        100, 100,
-        gMain,
-        &vp
-    );
+        0, TOP_BAR_H, W, H - TOP_BAR_H,
+        gMain);
 
-    RECT r0; GetClientRect(gMain, &r0);
-    int vw = std::max<int>(1, (int)(r0.right - r0.left) - dockL - dockR - 2 * SPLIT);
-    int vh = std::max<int>(1, (int)(r0.bottom - r0.top) - dockT - dockB - 2 * SPLIT);
-    D3D12Core core; if (!core.Init(vp.hwnd(), vw, vh)) return 1;
+    RECT rcClient{};
+    GetClientRect(gMain, &rcClient);
+    int vw = std::max(1, (int)(rcClient.right - rcClient.left));
+    int vh = std::max(1, (int)(rcClient.bottom - rcClient.top - TOP_BAR_H));
 
-    ConeScene scene; if (!scene.Init(core)) return 1; gScene = &scene;
-    scene.SetSpinSpeed(slider.st.value); UpdateTitle();
+    D3D12Core core;
+    if (!core.Init(vp.hwnd(), vw, vh))
+        return 1;
 
-    auto layout = [&](int cx, int cy) {
-        MoveWindow(pnlT, 0, 0, cx, dockT, TRUE);
-        MoveWindow(splT, 0, dockT, cx, SPLIT, TRUE);
+    ConeScene scene;
+    if (!scene.Init(core))
+        return 1;
 
-        MoveWindow(pnlB, 0, cy - dockB, cx, dockB, TRUE);
-        MoveWindow(splB, 0, cy - dockB - SPLIT, cx, SPLIT, TRUE);
+    gScene = &scene;
 
-        int topY = dockT + SPLIT;
-        int botY = cy - dockB - SPLIT;
-        int midH = std::max<int>(1, botY - topY);
+    // начальные значения
+    scene.SetSpinSpeed(sliderSpeed.st.value);
+    scene.SetAmbientStrength(sliderAmbient.st.value);
+    scene.SetDirStrength(sliderDir.st.value);
+    scene.SetSpotStrength(0, sliderSpot0.st.value);
+    scene.SetSpotStrength(1, sliderSpot1.st.value);
+    UpdateTitle();
 
-        MoveWindow(pnlL, 0, topY, dockL, midH, TRUE);
-        MoveWindow(splL, dockL, topY, SPLIT, midH, TRUE);
+    // ===== Лэйаут по ресайзу окна =====
 
-        MoveWindow(pnlR, cx - dockR, topY, dockR, midH, TRUE);
-        MoveWindow(splR, cx - dockR - SPLIT, topY, SPLIT, midH, TRUE);
+    mainWin.onResize = [&](int cx, int cy)
+        {
+            cx = std::max(cx, 1);
+            cy = std::max(cy, 1);
 
-        int cx0 = std::max<int>(1, cx - dockL - dockR - 2 * SPLIT);
-        int cy0 = std::max<int>(1, midH);
-        MoveWindow(vp.hwnd(), dockL + SPLIT, topY, cx0, cy0, TRUE);
+            int topH = TOP_BAR_H;
+            int vpY = topH;
+            int vpH = std::max(1, cy - vpY);
 
-        MoveWindow(topBox, 8, 8, std::max<int>(400, cx - 16), dockT - 16, TRUE);
-        MoveWindow(slider.hwnd(), 16, 24, std::max<int>(220, cx - 280), 26, TRUE);
-        MoveWindow(pause.hwnd(), cx - 180, 24, 120, 24, TRUE);
+            MoveWindow(topBox, 8, 8, cx - 16, topH - 16, TRUE);
+
+            int boxW = std::max(400, cx - 16);
+            int labelX = 16;
+            int sliderX = 90;
+            int rowH = 20;
+            int rowY = 24;
+            int sliderW = std::max(200, boxW - sliderX - 80);
+
+            MoveWindow(lblSpeed, labelX, rowY, 70, rowH, TRUE);
+            MoveWindow(sliderSpeed.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+            MoveWindow(pause.hwnd(), boxW - 140, rowY, 120, 24, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblAmb, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderAmbient.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblDir, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderDir.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblSpot0, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderSpot0.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblSpot1, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderSpot1.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            MoveWindow(vp.hwnd(), 0, vpY, cx, vpH, TRUE);
         };
 
-    mainWin.onResize = [&](int cx, int cy) { layout(cx, cy); };
-    slider.onChange = [&](float v) { if (gScene) gScene->SetSpinSpeed(v); UpdateTitle(); };
+    // начальный лэйаут
+    mainWin.onResize(
+        (int)(rcClient.right - rcClient.left),
+        (int)(rcClient.bottom - rcClient.top));
 
-    RECT rc; GetClientRect(gMain, &rc); layout((int)(rc.right - rc.left), (int)(rc.bottom - rc.top));
+    // ===== callbacks слайдеров =====
+
+    sliderSpeed.onChange = [&](float v)
+        {
+            if (gScene) gScene->SetSpinSpeed(v);
+            UpdateTitle();
+        };
+    sliderAmbient.onChange = [&](float v)
+        {
+            if (gScene) gScene->SetAmbientStrength(v);
+        };
+    sliderDir.onChange = [&](float v)
+        {
+            if (gScene) gScene->SetDirStrength(v);
+        };
+    sliderSpot0.onChange = [&](float v)
+        {
+            if (gScene) gScene->SetSpotStrength(0, v);
+        };
+    sliderSpot1.onChange = [&](float v)
+        {
+            if (gScene) gScene->SetSpotStrength(1, v);
+        };
+
+    // ===== главный цикл =====
 
     App app;
-    return app.run([&]() {
-        using clock = std::chrono::steady_clock;
-        static auto prev = clock::now();
-        auto now = clock::now();
-        float dt = std::chrono::duration<float>(now - prev).count();
-        prev = now;
+    return app.run([&]()
+        {
+            using clock = std::chrono::steady_clock;
+            static auto prev = clock::now();
+            auto now = clock::now();
+            float dt = std::chrono::duration<float>(now - prev).count();
+            prev = now;
 
-        if (pause.checked()) return true;
+            if (!pause.checked() && gScene)
+            {
+                const float moveSpeed = 2.0f;
+                float dx = 0.f, dy = 0.f, dz = 0.f;
 
-        // Плавное движение камеры: опрашиваем состояние клавиш каждый кадр
-        if (gScene) {
-            const float moveSpeed = 2.0f; // единиц в секунду
-            float dx = 0.0f, dy = 0.0f, dz = 0.0f;
+                if (GetAsyncKeyState('W') & 0x8000) dz += moveSpeed * dt;
+                if (GetAsyncKeyState('S') & 0x8000) dz -= moveSpeed * dt;
+                if (GetAsyncKeyState('A') & 0x8000) dx -= moveSpeed * dt;
+                if (GetAsyncKeyState('D') & 0x8000) dx += moveSpeed * dt;
+                if (GetAsyncKeyState(VK_SPACE) & 0x8000) dy += moveSpeed * dt;
+                if (GetAsyncKeyState(VK_CONTROL) & 0x8000) dy -= moveSpeed * dt;
 
-            if (GetAsyncKeyState('W') & 0x8000) dz += moveSpeed * dt;
-            if (GetAsyncKeyState('S') & 0x8000) dz -= moveSpeed * dt;
-            if (GetAsyncKeyState('A') & 0x8000) dx -= moveSpeed * dt;
-            if (GetAsyncKeyState('D') & 0x8000) dx += moveSpeed * dt;
-            if (GetAsyncKeyState(VK_SPACE) & 0x8000) dy += moveSpeed * dt;
-            if (GetAsyncKeyState(VK_CONTROL) & 0x8000) dy -= moveSpeed * dt;
-
-            if (dx != 0.0f || dy != 0.0f || dz != 0.0f) {
-                gScene->MoveCameraLocal(dx, dy, dz);
+                if (dx != 0.f || dy != 0.f || dz != 0.f)
+                    gScene->MoveCameraLocal(dx, dy, dz);
             }
-        }
 
-        auto rtv = core.BeginFrame();
-        scene.Render(core, rtv);
-        core.EndFrame();
-        return true;
+            auto rtv = core.BeginFrame();
+            scene.Render(core, rtv);
+            core.EndFrame();
+            return true;
         });
 }

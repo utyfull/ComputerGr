@@ -12,6 +12,7 @@ public:
     bool Init(D3D12Core& core);
     void Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv);
 
+    // скорость вращения конусов
     void SetSpinSpeed(float s) { spinSpeed_ = s; }
     float SpinSpeed() const { return spinSpeed_; }
 
@@ -19,6 +20,13 @@ public:
     void MoveCameraLocal(float dx, float dy, float dz);
     void RotateCamera(float dYaw, float dPitch);
     void ResetCamera();
+
+    // -------- управление светом из UI --------
+    void SetAmbientStrength(float s) { ambientStrength_ = s; }
+    void SetDirStrength(float s) { dirStrength_ = s; }
+    void SetSpotStrength(int index, float s) {
+        if (index >= 0 && index < 2) spot_[index].strength = s;
+    }
 
 private:
     ComPtr<ID3D12RootSignature> rootSig;
@@ -49,7 +57,22 @@ private:
     ComPtr<ID3D12Resource> spotLightBuf;
     UINT numPointLights_ = 0;
     UINT numSpotLights_ = 0;
-    DirectX::XMFLOAT3 spotPos_[2]{}; // для маркеров прожекторов
+
+    // CPU-параметры прожекторов (чтобы легко менять яркость / цвет)
+    struct SpotParams {
+        DirectX::XMFLOAT3 pos;       float attK;
+        DirectX::XMFLOAT3 dir;       float cosInner;
+        DirectX::XMFLOAT3 baseColor; float cosOuter;
+        float strength;              float _pad[3]; // только для выравнивания на CPU
+    };
+    SpotParams spot_[2]{};
+
+    // базовые цвета света + множители
+    DirectX::XMFLOAT3 ambientBase_{ 0.08f, 0.08f, 0.08f };
+    float ambientStrength_ = 1.0f;
+
+    DirectX::XMFLOAT3 dirColorBase_{ 0.6f, 0.6f, 0.7f };
+    float dirStrength_ = 1.0f;
 
     // анимация
     float angle_ = 0.0f;

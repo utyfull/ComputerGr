@@ -226,7 +226,7 @@ bool ConeScene::Init(D3D12Core& core) {
     };
     floorIndexCount = (UINT)floorIdx.size();
 
-    // ---------- Camera CB (достаточно 256 байт) ----------
+    // ---------- Camera CB ----------
     auto cbDesc = CD3DX12_RESOURCE_DESC::Buffer(256);
     CHECK_HR("Create CameraCB",
         device->CreateCommittedResource(
@@ -243,7 +243,6 @@ bool ConeScene::Init(D3D12Core& core) {
             IID_PPV_ARGS(&instBuf)));
 
     // ---------- Буферы света (shader-storage) ----------
-    // Точечных нет, но буфер должен существовать
     numPointLights_ = 0;
     numSpotLights_ = 2;
 
@@ -254,7 +253,7 @@ bool ConeScene::Init(D3D12Core& core) {
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&pointLightBuf)));
 
-    // Dummy-запись (не используется)
+    // Dummy-запись
     {
         PointLightCPU dummy{};
         void* p = nullptr;
@@ -270,55 +269,34 @@ bool ConeScene::Init(D3D12Core& core) {
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&spotLightBuf)));
 
-    // Заполняем 2 прожектора (как раньше в CameraCB)
+    // Инициализируем параметры прожекторов (CPU-структура spot_)
     {
-        SpotLightCPU spots[2];
-
         float innerDeg = 12.0f;
         float outerDeg = 18.0f;
         float cosInner = cosf(XMConvertToRadians(innerDeg));
         float cosOuter = cosf(XMConvertToRadians(outerDeg));
 
-        XMVECTOR dir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // строго вниз
+        XMVECTOR dir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f);
         XMFLOAT3 dir3;
         XMStoreFloat3(&dir3, dir);
 
         // левый (ярче)
-        {
-            spotPos_[0] = XMFLOAT3(-3.0f, 2.0f, -1.0f);
-            spots[0].pos = spotPos_[0];
-            spots[0].attK = 0.25f;
-            spots[0].dir = dir3;
-            spots[0].cosInner = cosInner;
-            spots[0].color = XMFLOAT3(1.0f, 0.95f, 0.8f);
-            spots[0].cosOuter = cosOuter;
+        spot_[0].pos = XMFLOAT3(-3.0f, 2.0f, -1.0f);
+        spot_[0].attK = 0.25f;
+        spot_[0].dir = dir3;
+        spot_[0].cosInner = cosInner;
+        spot_[0].baseColor = XMFLOAT3(1.0f, 0.95f, 0.8f);
+        spot_[0].cosOuter = cosOuter;
+        spot_[0].strength = 1.2f; // начальная «яркость»
 
-            float brightness = 1.2f;
-            spots[0].color.x *= brightness;
-            spots[0].color.y *= brightness;
-            spots[0].color.z *= brightness;
-        }
-
-        // правый (дальше и слабее)
-        {
-            spotPos_[1] = XMFLOAT3(3.0f, 2.5f, 1.0f);
-            spots[1].pos = spotPos_[1];
-            spots[1].attK = 0.25f;
-            spots[1].dir = dir3;
-            spots[1].cosInner = cosInner;
-            spots[1].color = XMFLOAT3(0.8f, 0.9f, 1.0f);
-            spots[1].cosOuter = cosOuter;
-
-            float brightness = 0.5f;
-            spots[1].color.x *= brightness;
-            spots[1].color.y *= brightness;
-            spots[1].color.z *= brightness;
-        }
-
-        void* p = nullptr;
-        spotLightBuf->Map(0, nullptr, &p);
-        std::memcpy(p, spots, sizeof(spots));
-        spotLightBuf->Unmap(0, nullptr);
+        // правый (слабее)
+        spot_[1].pos = XMFLOAT3(3.0f, 2.5f, 1.0f);
+        spot_[1].attK = 0.25f;
+        spot_[1].dir = dir3;
+        spot_[1].cosInner = cosInner;
+        spot_[1].baseColor = XMFLOAT3(0.8f, 0.9f, 1.0f);
+        spot_[1].cosOuter = cosOuter;
+        spot_[1].strength = 0.5f;
     }
 
     // ---------- SRV heap: instances (t0) + point lights (t1) + spot lights (t2) ----------
@@ -355,7 +333,7 @@ bool ConeScene::Init(D3D12Core& core) {
         srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv.Buffer.FirstElement = 0;
-        srv.Buffer.NumElements = 1; // буфер на 1 dummy-элемент
+        srv.Buffer.NumElements = 1;
         srv.Buffer.StructureByteStride = sizeof(PointLightCPU);
 
         device->CreateShaderResourceView(
@@ -433,13 +411,23 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     CameraCBData cbd{};
     XMStoreFloat4x4(&cbd.viewProj, XMMatrixTranspose(view * proj_));
     cbd.camPos = camPos_;
-    cbd.ambientColor = XMFLOAT3(0.08f, 0.08f, 0.08f);
+
+    // ambient с множителем
+    cbd.ambientColor = XMFLOAT3(
+        ambientBase_.x * ambientStrength_,
+        ambientBase_.y * ambientStrength_,
+        ambientBase_.z * ambientStrength_);
 
     // Направленный свет сверху-справа
     {
         XMVECTOR d = XMVector3Normalize(XMVectorSet(-0.4f, -1.0f, -0.3f, 0.0f));
         XMStoreFloat3(&cbd.dirLightDir, d);
-        cbd.dirLightColor = XMFLOAT3(0.6f, 0.6f, 0.7f);
+
+        XMFLOAT3 dirCol(
+            dirColorBase_.x * dirStrength_,
+            dirColorBase_.y * dirStrength_,
+            dirColorBase_.z * dirStrength_);
+        cbd.dirLightColor = dirCol;
 
         // Позиция маркера — вдоль -d
         XMVECTOR pos = XMVectorScale(-d, 8.0f);
@@ -451,6 +439,29 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
         camCB->Map(0, nullptr, &pCam);
         std::memcpy(pCam, &cbd, sizeof(cbd));
         camCB->Unmap(0, nullptr);
+    }
+
+    // ---------- Обновляем буфер прожекторов из CPU-параметров ----------
+    {
+        SpotLightCPU gpu[2]{};
+
+        for (UINT k = 0; k < numSpotLights_; ++k) {
+            gpu[k].pos = spot_[k].pos;
+            gpu[k].attK = spot_[k].attK;
+            gpu[k].dir = spot_[k].dir;
+            gpu[k].cosInner = spot_[k].cosInner;
+            gpu[k].color = spot_[k].baseColor;
+            gpu[k].cosOuter = spot_[k].cosOuter;
+
+            gpu[k].color.x *= spot_[k].strength;
+            gpu[k].color.y *= spot_[k].strength;
+            gpu[k].color.z *= spot_[k].strength;
+        }
+
+        void* p = nullptr;
+        spotLightBuf->Map(0, nullptr, &p);
+        std::memcpy(p, gpu, sizeof(SpotLightCPU) * numSpotLights_);
+        spotLightBuf->Unmap(0, nullptr);
     }
 
     // ---------- viewport crop под baseAspect_ ----------
@@ -544,17 +555,17 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     inst[4].tag = XMFLOAT4(2.0f, 0.0f, 0.0f, 0.0f);
     inst[4].mat = markerMat;
 
-    // Маркеры прожекторов — позиции берём из spotPos_[]
+    // Маркеры прожекторов — позиции берём из spot_[]
     XMMATRIX wS0 =
         XMMatrixScaling(0.25f, 1.0f, 0.25f) *
-        XMMatrixTranslation(spotPos_[0].x, spotPos_[0].y, spotPos_[0].z);
+        XMMatrixTranslation(spot_[0].pos.x, spot_[0].pos.y, spot_[0].pos.z);
     xm2worldT(wS0, inst[5].world);
     inst[5].tag = XMFLOAT4(3.0f, 0.0f, 0.0f, 0.0f);
     inst[5].mat = markerMat;
 
     XMMATRIX wS1 =
         XMMatrixScaling(0.25f, 1.0f, 0.25f) *
-        XMMatrixTranslation(spotPos_[1].x, spotPos_[1].y, spotPos_[1].z);
+        XMMatrixTranslation(spot_[1].pos.x, spot_[1].pos.y, spot_[1].pos.z);
     xm2worldT(wS1, inst[6].world);
     inst[6].tag = XMFLOAT4(4.0f, 0.0f, 0.0f, 0.0f);
     inst[6].mat = markerMat;
