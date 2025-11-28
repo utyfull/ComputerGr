@@ -127,24 +127,144 @@ static bool LoadTextureWIC(
     return true;
 }
 
+// ---------------- Helper для текстуры в DEFAULT-heap ----------------
+// ВАЖНО: теперь функция возвращает bool, чтобы CHECK_HR мог делать return false;
+
+static bool CreateTextureRGBA8_Default(
+    ID3D12Device* device,
+    ID3D12CommandQueue* queue,
+    const wchar_t* filename,
+    ComPtr<ID3D12Resource>& outTex)
+{
+    std::vector<uint8_t> texData;
+    UINT texW = 0;
+    UINT texH = 0;
+
+    if (!LoadTextureWIC(filename, texData, texW, texH))
+    {
+        texW = texH = 1;
+        texData.assign(4, 0);
+        texData[0] = 255; // R
+        texData[2] = 255; // B (фиолетовый)
+    }
+
+    auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        texW,
+        texH,
+        1, 1);
+
+    auto heapDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+    ComPtr<ID3D12Resource> tex;
+    CHECK_HR(
+        "Create Texture",
+        device->CreateCommittedResource(
+            &heapDefault,
+            D3D12_HEAP_FLAG_NONE,
+            &texDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST,
+            nullptr,
+            IID_PPV_ARGS(&tex)));
+
+    UINT64 uploadSize = GetRequiredIntermediateSize(tex.Get(), 0, 1);
+
+    auto heapUploadTex = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
+    auto uploadDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
+
+    ComPtr<ID3D12Resource> texUpload;
+    CHECK_HR(
+        "Create Texture Upload",
+        device->CreateCommittedResource(
+            &heapUploadTex,
+            D3D12_HEAP_FLAG_NONE,
+            &uploadDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&texUpload)));
+
+    D3D12_SUBRESOURCE_DATA sub{};
+    sub.pData = texData.data();
+    sub.RowPitch = texW * 4;
+    sub.SlicePitch = sub.RowPitch * texH;
+
+    ComPtr<ID3D12CommandAllocator>    alloc;
+    ComPtr<ID3D12GraphicsCommandList> cmd;
+
+    CHECK_HR(
+        "Create Alloc",
+        device->CreateCommandAllocator(
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            IID_PPV_ARGS(&alloc)));
+
+    CHECK_HR(
+        "Create CmdList",
+        device->CreateCommandList(
+            0,
+            D3D12_COMMAND_LIST_TYPE_DIRECT,
+            alloc.Get(),
+            nullptr,
+            IID_PPV_ARGS(&cmd)));
+
+    UpdateSubresources(
+        cmd.Get(),
+        tex.Get(),
+        texUpload.Get(),
+        0, 0, 1,
+        &sub);
+
+    auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
+        tex.Get(),
+        D3D12_RESOURCE_STATE_COPY_DEST,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+    cmd->ResourceBarrier(1, &barrier);
+    cmd->Close();
+
+    ID3D12CommandList* lists[] = { cmd.Get() };
+    queue->ExecuteCommandLists(1, lists);
+
+    ComPtr<ID3D12Fence> fence;
+    UINT64 fenceValue = 1;
+    CHECK_HR(
+        "Create Fence",
+        device->CreateFence(
+            0,
+            D3D12_FENCE_FLAG_NONE,
+            IID_PPV_ARGS(&fence)));
+
+    HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    queue->Signal(fence.Get(), fenceValue);
+    if (fence->GetCompletedValue() < fenceValue)
+    {
+        fence->SetEventOnCompletion(fenceValue, evt);
+        WaitForSingleObject(evt, INFINITE);
+    }
+
+    CloseHandle(evt);
+
+    outTex = tex;
+    return true;
+}
+
 // ---------------- Инициализация сцены ----------------
 
 bool ConeScene::Init(D3D12Core& core)
 {
     ID3D12Device* device = core.Dev();
 
-    // Root signature: b0, t0..t3, b1
+    // Root signature: b0, t0..t4, b1
     CD3DX12_ROOT_PARAMETER rp[3];
 
     rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_DESCRIPTOR_RANGE range;
-    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0);  // t0..t3
+    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);  // t0..t4
     rp[1].InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_ALL);
 
     rp[2].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
 
-    // Статический сэмплер для текстуры
     D3D12_STATIC_SAMPLER_DESC staticSampler{};
     staticSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     staticSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
@@ -190,7 +310,7 @@ bool ConeScene::Init(D3D12Core& core)
     CHECK_HR("Read VS", D3DReadFileToBlob(L"shaders/ConesVS.cso", &vs));
     CHECK_HR("Read PS", D3DReadFileToBlob(L"shaders/ConesPS.cso", &ps));
 
-    // Input layout
+    // Input layout (позиция / нормаль / UV)
     D3D12_INPUT_ELEMENT_DESC il[] =
     {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0,  0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
@@ -198,7 +318,6 @@ bool ConeScene::Init(D3D12Core& core)
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
-    // PSO
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
     psoDesc.InputLayout = { il, _countof(il) };
     psoDesc.pRootSignature = rootSig.Get();
@@ -227,7 +346,7 @@ bool ConeScene::Init(D3D12Core& core)
         device->CreateGraphicsPipelineState(
             &psoDesc, IID_PPV_ARGS(&pso)));
 
-    // ---------------- геометрия конусов ----------------
+    // ---------- Геометрия конусов ----------
     std::vector<ConeVertex> verts;
     std::vector<uint32_t>   idx;
     BuildConeMesh(128, verts, idx);
@@ -275,7 +394,7 @@ bool ConeScene::Init(D3D12Core& core)
 
     indexCount = static_cast<UINT>(idx.size());
 
-    // ---------------- геометрия пола / маркеров ----------------
+    // ---------- Пол / маркеры ----------
     std::vector<ConeVertex> floorVerts;
     std::vector<uint32_t>   floorIdx;
 
@@ -331,7 +450,7 @@ bool ConeScene::Init(D3D12Core& core)
 
     floorIndexCount = static_cast<UINT>(floorIdx.size());
 
-    // ---------------- геометрия куба ----------------
+    // ---------- Геометрия куба (общая для обоих) ----------
     std::vector<ConeVertex> cubeVerts;
     std::vector<uint32_t>   cubeIdx;
 
@@ -442,8 +561,8 @@ bool ConeScene::Init(D3D12Core& core)
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&camCB)));
 
-    // InstanceData: 3 конуса + пол + 3 маркера + куб
-    auto instDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(InstanceDataCPU) * 8);
+    // InstanceData: 3 конуса + пол + 3 маркера + 2 куба = 9
+    auto instDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(InstanceDataCPU) * 9);
 
     CHECK_HR(
         "Create InstBuf",
@@ -509,125 +628,28 @@ bool ConeScene::Init(D3D12Core& core)
         spot_[1].strength = 0.5f;
     }
 
-    // --------- текстура для куба: DEFAULT + upload + UpdateSubresources ---------
+    // ---------- две текстуры (вторая — если не найдётся файл, будет фиолетовой) ----------
+    if (!CreateTextureRGBA8_Default(
+        device,
+        core.Queue(),
+        L"C:/Users/pinch/cg_labs/ComputerGr/lab1/assets/K6614gtn_big_poster_ds.jpg",
+        diffuseTex0))
     {
-        std::vector<uint8_t> texData;
-        UINT texW = 0;
-        UINT texH = 0;
-
-        if (!LoadTextureWIC(
-            L"C:/Users/pinch/cg_labs/ComputerGr/lab1/assets/K6614gtn_big_poster_ds.jpg",
-            texData, texW, texH))
-        {
-            texW = texH = 1;
-            texData.assign(4, 0);
-            texData[0] = 255;
-            texData[2] = 255;
-        }
-
-        auto texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            texW,
-            texH,
-            1, 1);
-
-        auto heapDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
-
-        CHECK_HR(
-            "Create Texture",
-            device->CreateCommittedResource(
-                &heapDefault,
-                D3D12_HEAP_FLAG_NONE,
-                &texDesc,
-                D3D12_RESOURCE_STATE_COPY_DEST,
-                nullptr,
-                IID_PPV_ARGS(&diffuseTex)));
-
-        UINT64 uploadSize =
-            GetRequiredIntermediateSize(diffuseTex.Get(), 0, 1);
-
-        auto heapUploadTex = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD);
-        auto uploadDesc = CD3DX12_RESOURCE_DESC::Buffer(uploadSize);
-
-        ComPtr<ID3D12Resource> texUpload;
-
-        CHECK_HR(
-            "Create Texture Upload",
-            device->CreateCommittedResource(
-                &heapUploadTex,
-                D3D12_HEAP_FLAG_NONE,
-                &uploadDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ,
-                nullptr,
-                IID_PPV_ARGS(&texUpload)));
-
-        D3D12_SUBRESOURCE_DATA sub{};
-        sub.pData = texData.data();
-        sub.RowPitch = texW * 4;
-        sub.SlicePitch = sub.RowPitch * texH;
-
-        ComPtr<ID3D12CommandAllocator>    alloc;
-        ComPtr<ID3D12GraphicsCommandList> cmd;
-
-        CHECK_HR(
-            "Create Alloc",
-            device->CreateCommandAllocator(
-                D3D12_COMMAND_LIST_TYPE_DIRECT,
-                IID_PPV_ARGS(&alloc)));
-
-        CHECK_HR(
-            "Create CmdList",
-            device->CreateCommandList(
-                0,
-                D3D12_COMMAND_LIST_TYPE_DIRECT,
-                alloc.Get(),
-                nullptr,
-                IID_PPV_ARGS(&cmd)));
-
-        UpdateSubresources(
-            cmd.Get(),
-            diffuseTex.Get(),
-            texUpload.Get(),
-            0, 0, 1,
-            &sub);
-
-        auto barrier = CD3DX12_RESOURCE_BARRIER::Transition(
-            diffuseTex.Get(),
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-        cmd->ResourceBarrier(1, &barrier);
-        cmd->Close();
-
-        ID3D12CommandQueue* q = core.Queue();
-        ID3D12CommandList* lists[] = { cmd.Get() };
-        q->ExecuteCommandLists(1, lists);
-
-        ComPtr<ID3D12Fence> fence;
-        UINT64 fenceValue = 1;
-
-        CHECK_HR(
-            "Create Fence",
-            device->CreateFence(
-                0,
-                D3D12_FENCE_FLAG_NONE,
-                IID_PPV_ARGS(&fence)));
-
-        HANDLE evt = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-
-        q->Signal(fence.Get(), fenceValue);
-        if (fence->GetCompletedValue() < fenceValue)
-        {
-            fence->SetEventOnCompletion(fenceValue, evt);
-            WaitForSingleObject(evt, INFINITE);
-        }
-
-        CloseHandle(evt);
+        return false;
     }
 
-    // --------- SRV heap: instances (t0), point (t1), spot (t2), texture (t3) ---------
+    if (!CreateTextureRGBA8_Default(
+        device,
+        core.Queue(),
+        L"C:/Users/pinch/cg_labs/ComputerGr/lab1/assets/AA1ErqdZ.jpeg",
+        diffuseTex1))
+    {
+        return false;
+    }
+
+    // ---------- SRV heap: t0..t4 ----------
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.NumDescriptors = 4;
+    hd.NumDescriptors = 5;
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
@@ -650,7 +672,7 @@ bool ConeScene::Init(D3D12Core& core)
         srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv.Buffer.FirstElement = 0;
-        srv.Buffer.NumElements = 8;
+        srv.Buffer.NumElements = 9;
         srv.Buffer.StructureByteStride = sizeof(InstanceDataCPU);
 
         device->CreateShaderResourceView(
@@ -687,7 +709,7 @@ bool ConeScene::Init(D3D12Core& core)
             spotLightBuf.Get(), &srv, hCPU);
     }
 
-    // t3: текстура
+    // t3: diffuseTex0
     hCPU.ptr += srvInc;
     {
         D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
@@ -699,7 +721,22 @@ bool ConeScene::Init(D3D12Core& core)
         srv.Texture2D.ResourceMinLODClamp = 0.0f;
 
         device->CreateShaderResourceView(
-            diffuseTex.Get(), &srv, hCPU);
+            diffuseTex0.Get(), &srv, hCPU);
+    }
+
+    // t4: diffuseTex1
+    hCPU.ptr += srvInc;
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Texture2D.MipLevels = 1;
+        srv.Texture2D.MostDetailedMip = 0;
+        srv.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        device->CreateShaderResourceView(
+            diffuseTex1.Get(), &srv, hCPU);
     }
 
     // --------- проекция / камера ---------
@@ -734,7 +771,7 @@ void ConeScene::RotateCamera(float dYaw, float dPitch)
     camPitch_ += dPitch;
 
     const float limit = XM_PIDIV2 - 0.01f;
-    if (camPitch_ > limit) camPitch_ = limit;
+    if (camPitch_ > limit)  camPitch_ = limit;
     if (camPitch_ < -limit) camPitch_ = -limit;
 }
 
@@ -751,7 +788,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
 {
     ID3D12GraphicsCommandList* list = core.CL();
 
-    // View / World камеры
     XMMATRIX camRot = XMMatrixRotationRollPitchYaw(camPitch_, camYaw_, 0.0f);
     XMMATRIX camTrans = XMMatrixTranslation(camPos_.x, camPos_.y, camPos_.z);
     XMMATRIX camWorld = camRot * camTrans;
@@ -759,7 +795,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
 
     XMFLOAT3 dirLightPos{ 0.0f, 3.0f, 0.0f };
 
-    // CameraCB
     CameraCBData cbd{};
     XMStoreFloat4x4(&cbd.viewProj, XMMatrixTranspose(view * proj_));
     cbd.camPos = camPos_;
@@ -791,7 +826,7 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
         camCB->Unmap(0, nullptr);
     }
 
-    // Обновляем прожекторы
+    // обновляем прожекторы
     {
         SpotLightCPU gpu[2]{};
 
@@ -837,7 +872,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     const D3D12_VIEWPORT vpFull = core.Viewport();
     D3D12_RECT sc{ bx, by, bx + bw, by + bh };
 
-    // время / анимация конусов
     using Clock = std::chrono::steady_clock;
     static Clock::time_point prev = Clock::now();
     Clock::time_point now = Clock::now();
@@ -847,7 +881,7 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     angle_ += dt * spinSpeed_;
 
     // InstanceData
-    InstanceDataCPU inst[8];
+    InstanceDataCPU inst[9];
 
     auto xm2worldT = [](const XMMATRIX& M, XMFLOAT4X4& dst)
         {
@@ -935,13 +969,21 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     inst[6].tag = XMFLOAT4(4.0f, 0.0f, 0.0f, 0.0f);
     inst[6].mat = markerMat;
 
-    // куб с текстурой
-    XMMATRIX wCube =
+    // куб 0 (текстура 0)
+    XMMATRIX wCube0 =
         XMMatrixScaling(0.8f, 0.8f, 0.8f) *
         XMMatrixTranslation(0.0f, 0.8f, 1.5f);
-    xm2worldT(wCube, inst[7].world);
-    inst[7].tag = XMFLOAT4(10.0f, 0.0f, 0.0f, 0.0f); // просто другой tag
+    xm2worldT(wCube0, inst[7].world);
+    inst[7].tag = XMFLOAT4(10.0f, 0.0f, 0.0f, 0.0f); // tag для gDiffuseTex0
     inst[7].mat = cubeMat;
+
+    // куб 1 (текстура 1)
+    XMMATRIX wCube1 =
+        XMMatrixScaling(0.8f, 0.8f, 0.8f) *
+        XMMatrixTranslation(2.0f, 0.8f, 1.5f);
+    xm2worldT(wCube1, inst[8].world);
+    inst[8].tag = XMFLOAT4(11.0f, 0.0f, 0.0f, 0.0f); // tag для gDiffuseTex1
+    inst[8].mat = cubeMat;
 
     {
         void* pInst = nullptr;
@@ -950,7 +992,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
         instBuf->Unmap(0, nullptr);
     }
 
-    // биндинг и отрисовка
     ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(rootSig.Get());
@@ -969,7 +1010,7 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     objCB[1] = numPointLights_;
     objCB[2] = numSpotLights_;
 
-    // пол + маркеры (instances 3..6)
+    // пол + маркеры (3..6)
     list->IASetVertexBuffers(0, 1, &floorVBV);
     list->IASetIndexBuffer(&floorIBV);
     objCB[0] = 3u;
@@ -983,10 +1024,10 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
     list->DrawIndexedInstanced(indexCount, 3, 0, 0, 0);
 
-    // куб (7)
+    // кубы (7, 8)
     list->IASetVertexBuffers(0, 1, &cubeVBV);
     list->IASetIndexBuffer(&cubeIBV);
-    objCB[0] = 7u;
+    objCB[0] = 7u; // baseInstance
     list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
-    list->DrawIndexedInstanced(cubeIndexCount, 1, 0, 0, 0);
+    list->DrawIndexedInstanced(cubeIndexCount, 2, 0, 0, 0);
 }

@@ -1,7 +1,8 @@
 ﻿#include "Shared.hlsli"
 
-// Текстура и сэмплер
-Texture2D gDiffuseTex : register(t3);
+// Две текстуры и один сэмплер
+Texture2D gDiffuseTex0 : register(t3); // куб 0
+Texture2D gDiffuseTex1 : register(t4); // куб 1
 SamplerState gTextureSam : register(s0);
 
 // Вершинный шейдер
@@ -92,7 +93,8 @@ float4 PSMain(VSOut i) : SV_TARGET
 
     bool isFloor = (i.tag > 0.5f && i.tag < 1.5f);
     bool isCone = (i.tag < 0.5f);
-    bool isTextured = (i.tag > 9.5f && i.tag < 10.5f); // наш куб
+    bool isCube0 = (i.tag > 9.5f && i.tag < 10.5f); // первый куб
+    bool isCube1 = (i.tag > 10.5f && i.tag < 11.5f); // второй куб
 
     float3 matAlbedo = i.matAlbedo;
     float3 matSpec = i.matSpec;
@@ -100,11 +102,16 @@ float4 PSMain(VSOut i) : SV_TARGET
 
     float3 albedo;
 
-    if (isTextured)
+    // Текстурные кубы
+    if (isCube0)
     {
-        float3 texColor = gDiffuseTex.Sample(gTextureSam, i.uv).rgb;
-        albedo = texColor;
+        albedo = gDiffuseTex0.Sample(gTextureSam, i.uv).rgb;
     }
+    else if (isCube1)
+    {
+        albedo = gDiffuseTex1.Sample(gTextureSam, i.uv).rgb;
+    }
+    // Пол с шахматным паттерном
     else if (isFloor)
     {
         float2 p = i.obj.xz * 10.0;
@@ -115,6 +122,7 @@ float4 PSMain(VSOut i) : SV_TARGET
         float3 c1 = matAlbedo;
         albedo = lerp(c0, c1, check);
     }
+    // Коны с полосочками
     else
     {
         float3 base = matAlbedo;
@@ -141,7 +149,7 @@ float4 PSMain(VSOut i) : SV_TARGET
             shininess, specScaleDir);
     }
 
-    // Точечные источники (пока их может быть 0)
+    // Точечные источники (если будут)
     [loop]
     for (uint k = 0; k < gNumPointLights; ++k)
     {
