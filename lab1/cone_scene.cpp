@@ -29,13 +29,9 @@ struct CameraCBData {
 
     XMFLOAT3 dirLightColor;
     float    _pad3;
-
-    XMFLOAT4 spotPosRange[2];
-    XMFLOAT4 spotDirInner[2];
-    XMFLOAT4 spotColorOuter[2];
 };
 
-// ===== CPU-версия материала и InstanceData (должны совпадать с HLSL) =====
+// ===== CPU-версии материала, инстанса и источников света =====
 
 struct MaterialCPU {
     XMFLOAT3 albedo;
@@ -50,16 +46,35 @@ struct InstanceDataCPU {
     MaterialCPU mat;
 };
 
+// ДОЛЖНО совпадать с HLSL PointLight
+struct PointLightCPU {
+    XMFLOAT3 pos;   float attK;   // 1 / (1 + attK * d^2)
+    XMFLOAT3 color; float _pad;
+};
+
+// ДОЛЖНО совпадать с HLSL SpotLight
+struct SpotLightCPU {
+    XMFLOAT3 pos;      float attK;
+    XMFLOAT3 dir;      float cosInner;
+    XMFLOAT3 color;    float cosOuter;
+};
+
 bool ConeScene::Init(D3D12Core& core) {
     ID3D12Device* device = core.Dev();
 
-    // ---------- Root signature: b0 (камера+свет), t0 (instances), b1 (baseInstance) ----------
+    // ---------- Root signature: b0 (камера), t0..t2 (SRV: instances + lights), b1 (ObjectCB как root-constants) ----------
     CD3DX12_ROOT_PARAMETER rp[3];
-    rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
+
+    // b0: CameraCB
+    rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+
+    // t0..t2: gInstances, gPointLights, gSpotLights
     CD3DX12_DESCRIPTOR_RANGE range;
-    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);                 // t0
+    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0); // count = 3, baseShaderRegister = 0
     rp[1].InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_ALL);
-    rp[2].InitAsConstants(1, 1, 0, D3D12_SHADER_VISIBILITY_ALL);       // b1: gBaseInstance
+
+    // b1: ObjectCB (gBaseInstance, gNumPointLights, gNumSpotLights) через root-constants
+    rp[2].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL); // 3 x uint, register(b1)
 
     D3D12_ROOT_SIGNATURE_DESC rs{};
     rs.NumParameters = _countof(rp);
@@ -95,15 +110,12 @@ bool ConeScene::Init(D3D12Core& core) {
     psoDesc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
     psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 
-    // Растеризатор: пока БЕЗ отсечения, чтобы ничего не пропало.
-    // Когда всё заработает, можем включить BACK.
     psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 
-    // Глубина
     D3D12_DEPTH_STENCIL_DESC ds{};
-    ds.DepthEnable = TRUE;                         // включаем Z-buffer
-    ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;   // пишем глубину
+    ds.DepthEnable = TRUE;
+    ds.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
     ds.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     ds.StencilEnable = FALSE;
     psoDesc.DepthStencilState = ds;
@@ -112,10 +124,7 @@ bool ConeScene::Init(D3D12Core& core) {
     psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-    // ОБЯЗАТЕЛЬНО совпадает с форматом depth-буфера в Core
-    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT; // совпадает с depth-буфером
     psoDesc.SampleDesc.Count = 1;
 
     CHECK_HR("CreateGraphicsPipelineState",
@@ -217,15 +226,6 @@ bool ConeScene::Init(D3D12Core& core) {
     };
     floorIndexCount = (UINT)floorIdx.size();
 
-    // ---------- SRV heap для InstanceData ----------
-    D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.NumDescriptors = 1;
-    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    CHECK_HR("Create SRV heap",
-        device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&srvHeap)));
-    srvGpu = srvHeap->GetGPUDescriptorHandleForHeapStart();
-
     // ---------- Camera CB (достаточно 256 байт) ----------
     auto cbDesc = CD3DX12_RESOURCE_DESC::Buffer(256);
     CHECK_HR("Create CameraCB",
@@ -242,16 +242,140 @@ bool ConeScene::Init(D3D12Core& core) {
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&instBuf)));
 
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
-    srv.Format = DXGI_FORMAT_UNKNOWN;
-    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
-    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Buffer.FirstElement = 0;
-    srv.Buffer.NumElements = 7;
-    srv.Buffer.StructureByteStride = sizeof(InstanceDataCPU);
+    // ---------- Буферы света (shader-storage) ----------
+    // Точечных нет, но буфер должен существовать
+    numPointLights_ = 0;
+    numSpotLights_ = 2;
 
-    device->CreateShaderResourceView(
-        instBuf.Get(), &srv, srvHeap->GetCPUDescriptorHandleForHeapStart());
+    auto pointBufDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(PointLightCPU) * 1);
+    CHECK_HR("Create PointLightBuf",
+        device->CreateCommittedResource(
+            &heapUpload, D3D12_HEAP_FLAG_NONE, &pointBufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&pointLightBuf)));
+
+    // Dummy-запись (не используется)
+    {
+        PointLightCPU dummy{};
+        void* p = nullptr;
+        pointLightBuf->Map(0, nullptr, &p);
+        std::memcpy(p, &dummy, sizeof(dummy));
+        pointLightBuf->Unmap(0, nullptr);
+    }
+
+    auto spotBufDesc = CD3DX12_RESOURCE_DESC::Buffer(sizeof(SpotLightCPU) * numSpotLights_);
+    CHECK_HR("Create SpotLightBuf",
+        device->CreateCommittedResource(
+            &heapUpload, D3D12_HEAP_FLAG_NONE, &spotBufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&spotLightBuf)));
+
+    // Заполняем 2 прожектора (как раньше в CameraCB)
+    {
+        SpotLightCPU spots[2];
+
+        float innerDeg = 12.0f;
+        float outerDeg = 18.0f;
+        float cosInner = cosf(XMConvertToRadians(innerDeg));
+        float cosOuter = cosf(XMConvertToRadians(outerDeg));
+
+        XMVECTOR dir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // строго вниз
+        XMFLOAT3 dir3;
+        XMStoreFloat3(&dir3, dir);
+
+        // левый (ярче)
+        {
+            spotPos_[0] = XMFLOAT3(-3.0f, 2.0f, -1.0f);
+            spots[0].pos = spotPos_[0];
+            spots[0].attK = 0.25f;
+            spots[0].dir = dir3;
+            spots[0].cosInner = cosInner;
+            spots[0].color = XMFLOAT3(1.0f, 0.95f, 0.8f);
+            spots[0].cosOuter = cosOuter;
+
+            float brightness = 1.2f;
+            spots[0].color.x *= brightness;
+            spots[0].color.y *= brightness;
+            spots[0].color.z *= brightness;
+        }
+
+        // правый (дальше и слабее)
+        {
+            spotPos_[1] = XMFLOAT3(3.0f, 2.5f, 1.0f);
+            spots[1].pos = spotPos_[1];
+            spots[1].attK = 0.25f;
+            spots[1].dir = dir3;
+            spots[1].cosInner = cosInner;
+            spots[1].color = XMFLOAT3(0.8f, 0.9f, 1.0f);
+            spots[1].cosOuter = cosOuter;
+
+            float brightness = 0.5f;
+            spots[1].color.x *= brightness;
+            spots[1].color.y *= brightness;
+            spots[1].color.z *= brightness;
+        }
+
+        void* p = nullptr;
+        spotLightBuf->Map(0, nullptr, &p);
+        std::memcpy(p, spots, sizeof(spots));
+        spotLightBuf->Unmap(0, nullptr);
+    }
+
+    // ---------- SRV heap: instances (t0) + point lights (t1) + spot lights (t2) ----------
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.NumDescriptors = 3;
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    CHECK_HR("Create SRV heap",
+        device->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&srvHeap)));
+    srvGpu = srvHeap->GetGPUDescriptorHandleForHeapStart();
+
+    UINT srvInc = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE hCPU = srvHeap->GetCPUDescriptorHandleForHeapStart();
+
+    // t0: gInstances
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Buffer.FirstElement = 0;
+        srv.Buffer.NumElements = 7;
+        srv.Buffer.StructureByteStride = sizeof(InstanceDataCPU);
+
+        device->CreateShaderResourceView(
+            instBuf.Get(), &srv, hCPU);
+    }
+
+    // t1: gPointLights
+    hCPU.ptr += srvInc;
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Buffer.FirstElement = 0;
+        srv.Buffer.NumElements = 1; // буфер на 1 dummy-элемент
+        srv.Buffer.StructureByteStride = sizeof(PointLightCPU);
+
+        device->CreateShaderResourceView(
+            pointLightBuf.Get(), &srv, hCPU);
+    }
+
+    // t2: gSpotLights
+    hCPU.ptr += srvInc;
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Buffer.FirstElement = 0;
+        srv.Buffer.NumElements = numSpotLights_;
+        srv.Buffer.StructureByteStride = sizeof(SpotLightCPU);
+
+        device->CreateShaderResourceView(
+            spotLightBuf.Get(), &srv, hCPU);
+    }
 
     // ---------- Проекция и камера ----------
     baseAspect_ = (core.Height() > 0)
@@ -302,11 +426,10 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     XMMATRIX camWorld = camRot * camTrans;
     XMMATRIX view = XMMatrixInverse(nullptr, camWorld);
 
-    // Псевдо-позиции источников для маркеров
+    // Псевдо-позиция направленного источника для маркера
     XMFLOAT3 dirLightPos{ 0.0f, 3.0f, 0.0f };
-    XMFLOAT3 spotPos[2]{};
 
-    // ---------- Camera / lights CB ----------
+    // ---------- Camera CB ----------
     CameraCBData cbd{};
     XMStoreFloat4x4(&cbd.viewProj, XMMatrixTranspose(view * proj_));
     cbd.camPos = camPos_;
@@ -323,43 +446,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
         XMStoreFloat3(&dirLightPos, pos);
     }
 
-    // Прожекторы: два «фонарика» под собой, разнесены
-    {
-        float innerDeg = 12.0f;
-        float outerDeg = 18.0f;
-        float cosInner = cosf(XMConvertToRadians(innerDeg));
-        float cosOuter = cosf(XMConvertToRadians(outerDeg));
-
-        XMVECTOR spotDir = XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f); // строго вниз
-
-        // левый (ярче)
-        {
-            spotPos[0] = XMFLOAT3(-3.0f, 2.0f, -1.0f);
-            cbd.spotPosRange[0] = XMFLOAT4(
-                spotPos[0].x, spotPos[0].y, spotPos[0].z,
-                0.25f); // коэффициент k для 1/(1+k d^2)
-
-            XMFLOAT3 dir3;
-            XMStoreFloat3(&dir3, spotDir);
-            cbd.spotDirInner[0] = XMFLOAT4(dir3.x, dir3.y, dir3.z, cosInner);
-            cbd.spotColorOuter[0] = XMFLOAT4(1.0f, 0.95f, 0.8f, cosOuter);
-        }
-
-        // правый (дальше и слабее)
-        {
-            spotPos[1] = XMFLOAT3(3.0f, 2.5f, 1.0f);
-            cbd.spotPosRange[1] = XMFLOAT4(
-                spotPos[1].x, spotPos[1].y, spotPos[1].z,
-                0.25f);
-
-            XMFLOAT3 dir3;
-            XMStoreFloat3(&dir3, spotDir);
-            cbd.spotDirInner[1] = XMFLOAT4(dir3.x, dir3.y, dir3.z, cosInner);
-            cbd.spotColorOuter[1] = XMFLOAT4(0.8f, 0.9f, 1.0f, cosOuter);
-        }
-    }
-
-    // Записываем CB
     {
         void* pCam = nullptr;
         camCB->Map(0, nullptr, &pCam);
@@ -458,17 +544,17 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
     inst[4].tag = XMFLOAT4(2.0f, 0.0f, 0.0f, 0.0f);
     inst[4].mat = markerMat;
 
-    // Маркеры прожекторов
+    // Маркеры прожекторов — позиции берём из spotPos_[]
     XMMATRIX wS0 =
         XMMatrixScaling(0.25f, 1.0f, 0.25f) *
-        XMMatrixTranslation(spotPos[0].x, spotPos[0].y, spotPos[0].z);
+        XMMatrixTranslation(spotPos_[0].x, spotPos_[0].y, spotPos_[0].z);
     xm2worldT(wS0, inst[5].world);
     inst[5].tag = XMFLOAT4(3.0f, 0.0f, 0.0f, 0.0f);
     inst[5].mat = markerMat;
 
     XMMATRIX wS1 =
         XMMatrixScaling(0.25f, 1.0f, 0.25f) *
-        XMMatrixTranslation(spotPos[1].x, spotPos[1].y, spotPos[1].z);
+        XMMatrixTranslation(spotPos_[1].x, spotPos_[1].y, spotPos_[1].z);
     xm2worldT(wS1, inst[6].world);
     inst[6].tag = XMFLOAT4(4.0f, 0.0f, 0.0f, 0.0f);
     inst[6].mat = markerMat;
@@ -495,15 +581,21 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv) {
 
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+    uint32_t objCB[3];
+    objCB[1] = numPointLights_; // gNumPointLights
+    objCB[2] = numSpotLights_;  // gNumSpotLights
+
     // Пол + 3 маркера (instances 3..6)
     list->IASetVertexBuffers(0, 1, &floorVBV);
     list->IASetIndexBuffer(&floorIBV);
-    list->SetGraphicsRoot32BitConstant(2, 3u, 0); // gBaseInstance = 3
+    objCB[0] = 3u; // gBaseInstance
+    list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
     list->DrawIndexedInstanced(floorIndexCount, 4, 0, 0, 0);
 
     // Конусы (instances 0..2)
     list->IASetVertexBuffers(0, 1, &vbv);
     list->IASetIndexBuffer(&ibv);
-    list->SetGraphicsRoot32BitConstant(2, 0u, 0); // gBaseInstance = 0
+    objCB[0] = 0u; // gBaseInstance
+    list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
     list->DrawIndexedInstanced(indexCount, 3, 0, 0, 0);
 }

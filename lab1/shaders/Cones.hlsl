@@ -1,5 +1,4 @@
-﻿// Cones.hlsl
-#include "Shared.hlsli"
+﻿#include "Shared.hlsli"
 
 //====================== ВЕРШИННЫЙ ШЕЙДЕР ======================
 
@@ -8,7 +7,7 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     uint idx = gBaseInstance + instId;
     InstanceData inst = gInstances[idx];
 
-    float4 wp = mul(float4(v.pos, 1.0), inst.world);
+    float4 wp = mul(float4(v.pos, 1.0f), inst.world);
     float3 wn = mul((float3x3) inst.world, v.nrm);
 
     VSOut o;
@@ -18,7 +17,6 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     o.obj = v.pos;
     o.tag = inst.tag.x;
 
-    // материал
     o.matAlbedo = inst.mat.albedo;
     o.matSpec = inst.mat.specColor;
     o.matShin = inst.mat.shininess;
@@ -69,10 +67,9 @@ float4 PSMain(VSOut i) : SV_TARGET
         // плоский квадрат [-1;1] в XZ, рисуем в нём круг
         float2 uv = i.obj.xz;
         float r = length(uv);
-
         float mask = step(r, 1.0); // 1 внутри радиуса, 0 снаружи
 
-        float3 bg = float3(0.2, 0.2, 0.2); // фон как clearColor
+        float3 bg = float3(0.2, 0.2, 0.2);
         float3 col = lerp(bg, lightColor, mask);
 
         return float4(col, 1.0);
@@ -85,7 +82,6 @@ float4 PSMain(VSOut i) : SV_TARGET
     bool isFloor = (i.tag > 0.5f && i.tag < 1.5f);
     bool isCone = (i.tag < 0.5f);
 
-    // материал из InstanceData
     float3 matAlbedo = i.matAlbedo;
     float3 matSpec = i.matSpec;
     float shininess = i.matShin;
@@ -119,10 +115,11 @@ float4 PSMain(VSOut i) : SV_TARGET
     // --- базовый ambient ---
     float3 color = ambientColor * albedo;
 
-    // 1) направленный свет
+    // 1) направленный свет (как раньше)
     {
         float3 Ld = normalize(-dirLightDir);
         float specScaleDir = isFloor ? 0.2f : 0.7f;
+
         color += BlinnPhong(
             N, V, Ld,
             dirLightColor,
@@ -130,45 +127,56 @@ float4 PSMain(VSOut i) : SV_TARGET
             shininess, specScaleDir);
     }
 
-    // 2) прожекторы
-    [unroll]
-    for (int k = 0; k < 2; ++k)
+    // 2) точечные источники через gPointLights
+    [loop]
+    for (uint k = 0; k < gNumPointLights; ++k)
     {
-        float3 lightPos = spotPosRange[k].xyz;
-        float attK = spotPosRange[k].w;
+        PointLight pl = gPointLights[k];
 
-        float3 spotDir = normalize(spotDirInner[k].xyz);
-        float cosInner = spotDirInner[k].w;
+        float3 Lvec = pl.pos - i.posW;
+        float dist = length(Lvec);
+        float3 L = Lvec / max(dist, 1e-4);
 
-        float3 lightCol = spotColorOuter[k].xyz;
-        float cosOuter = spotColorOuter[k].w;
+        float att = 1.0f / (1.0f + pl.attK * dist * dist);
 
-        // немного различим яркость: 0-й ярче, 1-й слабее
-        float brightness = (k == 0) ? 1.2f : 0.5f;
-        lightCol *= brightness;
+        float specScalePoint = isFloor ? 0.25f : 0.8f;
+
+        float3 contrib = BlinnPhong(
+            N, V, L,
+            pl.color,
+            albedo, matSpec,
+            shininess, specScalePoint);
+
+        color += contrib * att;
+    }
+
+    // 3) прожекторы через gSpotLights
+    [loop]
+    for (uint k = 0; k < gNumSpotLights; ++k)
+    {
+        SpotLight sl = gSpotLights[k];
+
+        float3 Lvec = sl.pos - i.posW;
+        float dist = length(Lvec);
+        float3 L = Lvec / max(dist, 1e-4);
 
         // направление из источника к точке
-        float3 Lp = normalize(i.posW - lightPos);
-        float3 L = -Lp; // из точки к источнику
+        float3 Lp = -L;
+        float cosTheta = dot(sl.dir, Lp);
 
-        // угол между осью прожектора и лучом
-        float cosTheta = dot(spotDir, Lp);
-        float spotFactor = saturate((cosTheta - cosOuter) / (cosInner - cosOuter));
-
-        // сужаем пятно, но с мягкими краями
-        spotFactor = pow(spotFactor, 4.0f);
+        float spotFactor = saturate((cosTheta - sl.cosOuter) / (sl.cosInner - sl.cosOuter));
+        spotFactor = pow(spotFactor, 4.0f); // мягкие края
 
         if (spotFactor <= 0.0f)
             continue;
 
-        float dist = length(lightPos - i.posW);
-        float att = 1.0f / (1.0f + attK * dist * dist); // закон обратных квадратов
+        float att = 1.0f / (1.0f + sl.attK * dist * dist);
 
         float specScaleSpot = isFloor ? 0.25f : 0.8f;
 
         float3 contrib = BlinnPhong(
             N, V, L,
-            lightCol,
+            sl.color,
             albedo, matSpec,
             shininess, specScaleSpot);
 

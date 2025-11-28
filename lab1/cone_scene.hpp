@@ -44,6 +44,13 @@ private:
     ComPtr<ID3D12DescriptorHeap> srvHeap;
     D3D12_GPU_DESCRIPTOR_HANDLE srvGpu{};
 
+    // буферы света (shader-storage)
+    ComPtr<ID3D12Resource> pointLightBuf;
+    ComPtr<ID3D12Resource> spotLightBuf;
+    UINT numPointLights_ = 0;
+    UINT numSpotLights_ = 0;
+    DirectX::XMFLOAT3 spotPos_[2]{}; // для маркеров прожекторов
+
     // анимация
     float angle_ = 0.0f;
     float spinSpeed_ = 1.2f;
