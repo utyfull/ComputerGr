@@ -1,12 +1,12 @@
 ﻿#include "Shared.hlsli"
 
-//====================== ВЕРШИННЫЙ ШЕЙДЕР ======================
-
+// Вершинный шейдер
 VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
 {
     uint idx = gBaseInstance + instId;
     InstanceData inst = gInstances[idx];
 
+    // Позиция и нормаль в мировом пространстве
     float4 wp = mul(float4(v.pos, 1.0f), inst.world);
     float3 wn = mul((float3x3) inst.world, v.nrm);
 
@@ -24,13 +24,16 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     return o;
 }
 
-//====================== МОДЕЛЬ БЛИНН–ФОНГА ====================
-
+// Модель Блинна–Фонга
 float3 BlinnPhong(
-    float3 N, float3 V, float3 L,
+    float3 N,
+    float3 V,
+    float3 L,
     float3 lightColor,
-    float3 albedo, float3 specColor,
-    float shininess, float specScale)
+    float3 albedo,
+    float3 specColor,
+    float shininess,
+    float specScale)
 {
     float ndotl = saturate(dot(N, L));
     if (ndotl <= 0.0f)
@@ -48,23 +51,28 @@ float3 BlinnPhong(
     return diffCol + specCol;
 }
 
-//====================== ПИКСЕЛЬНЫЙ ШЕЙДЕР =====================
-
+// Пиксельный шейдер
 float4 PSMain(VSOut i) : SV_TARGET
 {
-    // ---------- Маркеры источников (кружочки) ----------
+    // Маркеры источников (кружочки)
     if (i.tag >= 2.0f)
     {
         float3 lightColor;
 
-        if (i.tag < 2.5f)        // направленный
+        if (i.tag < 2.5f)          // направленный свет
+        {
             lightColor = float3(1.0, 1.0, 0.2); // жёлтый
-        else if (i.tag < 3.5f)   // прожектор 0
+        }
+        else if (i.tag < 3.5f)     // прожектор 0
+        {
             lightColor = float3(1.0, 0.3, 0.3); // красный
+        }
         else // прожектор 1
+        {
             lightColor = float3(0.3, 0.6, 1.0); // синий
+        }
 
-        // плоский квадрат [-1;1] в XZ, рисуем в нём круг
+        // Плоский квадрат [-1; 1] в XZ, рисуем в нём круг
         float2 uv = i.obj.xz;
         float r = length(uv);
         float mask = step(r, 1.0); // 1 внутри радиуса, 0 снаружи
@@ -75,7 +83,7 @@ float4 PSMain(VSOut i) : SV_TARGET
         return float4(col, 1.0);
     }
 
-    // ---------- Остальное: конусы и пол под освещением ----------
+    // Конусы и пол под освещением
     float3 N = normalize(i.nrmW);
     float3 V = normalize(camPos - i.posW);
 
@@ -86,12 +94,12 @@ float4 PSMain(VSOut i) : SV_TARGET
     float3 matSpec = i.matSpec;
     float shininess = i.matShin;
 
-    // --- Альбедо с учётом узора ---
+    // Альбедо с учётом узора
     float3 albedo;
 
     if (isFloor)
     {
-        // шахматка в объектном пространстве пола
+        // Шахматка в объектном пространстве пола
         float2 p = i.obj.xz * 10.0; // мелкие клетки
         float2 cell = floor(p);
         float check = fmod(abs(cell.x + cell.y), 2.0);
@@ -100,22 +108,23 @@ float4 PSMain(VSOut i) : SV_TARGET
         float3 c1 = matAlbedo; // светлая клетка
         albedo = lerp(c0, c1, check);
     }
-    else // конусы
+    else
     {
+        // Конусы: базовый цвет + синяя полоса
         float3 base = matAlbedo;
-        float3 stripeCol = matAlbedo * float3(0.10, 0.10, 2.50); // синяя полоса
+        float3 stripeCol = matAlbedo * float3(0.10, 0.10, 2.50);
 
         float ang = atan2(i.obj.z, i.obj.x);
         float stripeWidth = 0.15;
-        float m = smoothstep(1.0 - stripeWidth, 1.0, cos(ang));
+        float m = smoothstep(1.0f - stripeWidth, 1.0f, cos(ang));
 
         albedo = lerp(base, stripeCol, m);
     }
 
-    // --- базовый ambient ---
+    // Базовый ambient
     float3 color = ambientColor * albedo;
 
-    // 1) направленный свет (как раньше)
+    // Направленный свет
     {
         float3 Ld = normalize(-dirLightDir);
         float specScaleDir = isFloor ? 0.2f : 0.7f;
@@ -127,7 +136,7 @@ float4 PSMain(VSOut i) : SV_TARGET
             shininess, specScaleDir);
     }
 
-    // 2) точечные источники через gPointLights
+    // Точечные источники
     [loop]
     for (uint k = 0; k < gNumPointLights; ++k)
     {
@@ -135,7 +144,7 @@ float4 PSMain(VSOut i) : SV_TARGET
 
         float3 Lvec = pl.pos - i.posW;
         float dist = length(Lvec);
-        float3 L = Lvec / max(dist, 1e-4);
+        float3 L = Lvec / max(dist, 1e-4f);
 
         float att = 1.0f / (1.0f + pl.attK * dist * dist);
 
@@ -150,7 +159,7 @@ float4 PSMain(VSOut i) : SV_TARGET
         color += contrib * att;
     }
 
-    // 3) прожекторы через gSpotLights
+    // Прожекторы
     [loop]
     for (uint k = 0; k < gNumSpotLights; ++k)
     {
@@ -158,13 +167,15 @@ float4 PSMain(VSOut i) : SV_TARGET
 
         float3 Lvec = sl.pos - i.posW;
         float dist = length(Lvec);
-        float3 L = Lvec / max(dist, 1e-4);
+        float3 L = Lvec / max(dist, 1e-4f);
 
-        // направление из источника к точке
+        // Направление из источника к точке
         float3 Lp = -L;
         float cosTheta = dot(sl.dir, Lp);
 
-        float spotFactor = saturate((cosTheta - sl.cosOuter) / (sl.cosInner - sl.cosOuter));
+        float spotFactor = saturate(
+            (cosTheta - sl.cosOuter) /
+            (sl.cosInner - sl.cosOuter));
         spotFactor = pow(spotFactor, 4.0f); // мягкие края
 
         if (spotFactor <= 0.0f)

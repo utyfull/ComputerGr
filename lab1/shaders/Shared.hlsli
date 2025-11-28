@@ -1,12 +1,14 @@
 #ifndef SHARED_HLSLI
 #define SHARED_HLSLI
 
+// Входные данные вершинного шейдера
 struct VSInput
 {
     float3 pos : POSITION;
     float3 nrm : NORMAL;
 };
 
+// Материал объекта
 struct Material
 {
     float3 albedo;
@@ -16,6 +18,7 @@ struct Material
     float _pad;
 };
 
+// Данные инстанса
 struct InstanceData
 {
     float4x4 world;
@@ -23,10 +26,10 @@ struct InstanceData
     Material mat;
 };
 
-// Инстансы — уже StructuredBuffer
+// Инстансы (structured buffer)
 StructuredBuffer<InstanceData> gInstances : register(t0);
 
-// Камера + ambient + направленный свет (cbuffer b0)
+// Камера, ambient и направленный свет
 cbuffer CameraCB : register(b0)
 {
     float4x4 viewProj;
@@ -44,42 +47,43 @@ cbuffer CameraCB : register(b0)
     float _pad3;
 };
 
-// Для baseInstance + количества источников: b1 (root constants)
+// Base instance и количество источников
 cbuffer ObjectCB : register(b1)
 {
     uint gBaseInstance;
     uint gNumPointLights;
     uint gNumSpotLights;
-    uint _padObj; // до 16 байт
+    uint _padObj;
 };
 
-// ----------------------------
-// Shader-storage буферы огней
-// ----------------------------
-
+// Точечный источник
 struct PointLight
 {
     float3 pos;
     float attK; // 1 / (1 + attK * d^2)
+
     float3 color;
     float _pad;
 };
 
+// Прожектор
 struct SpotLight
 {
     float3 pos;
     float attK;
+
     float3 dir;
     float cosInner;
+
     float3 color;
     float cosOuter;
 };
 
-// t1 — точечные, t2 — прожекторы
+// Точечные (t1) и направленные (t2) источники
 StructuredBuffer<PointLight> gPointLights : register(t1);
 StructuredBuffer<SpotLight> gSpotLights : register(t2);
 
-// Выход VS
+// Выход вершины
 struct VSOut
 {
     float4 pos : SV_Position;
