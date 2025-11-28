@@ -1,4 +1,5 @@
 #pragma once
+
 #include <vector>
 #include <cstdint>
 #include <cmath>
@@ -8,11 +9,11 @@ struct ConeVertex
 {
     float px, py, pz;
     float nx, ny, nz;
+    float u, v;
 };
 
 // Генерирует треугольную сетку правого конуса высотой 1 и радиусом 1 с осью вдоль Y.
 // N >= 3 — количество сегментов окружности.
-// verts — позиции и нормали, idx — индексы треугольников.
 inline void BuildConeMesh(uint32_t N, std::vector<ConeVertex>& verts, std::vector<uint32_t>& idx)
 {
     verts.clear();
@@ -38,8 +39,6 @@ inline void BuildConeMesh(uint32_t N, std::vector<ConeVertex>& verts, std::vecto
             idx.push_back(base + 2);
         };
 
-    // Боковая поверхность
-    // Нормаль боковой поверхности идёт в направлении (x, radius / height, z), затем нормализуется.
     const float nySlope = radius / height;
 
     for (uint32_t i = 0; i < N; ++i)
@@ -62,7 +61,6 @@ inline void BuildConeMesh(uint32_t N, std::vector<ConeVertex>& verts, std::vecto
         const float ny1 = nySlope / len1;
         const float nz1 = z1 / len1;
 
-        // Нормаль в вершине конуса как среднее двух соседних
         float ntx = nx0 + nx1;
         float nty = ny0 + ny1;
         float ntz = nz0 + nz1;
@@ -75,22 +73,21 @@ inline void BuildConeMesh(uint32_t N, std::vector<ConeVertex>& verts, std::vecto
             ntz /= nlen;
         }
 
-        ConeVertex tip{ 0.0f, height, 0.0f, ntx, nty, ntz };
-        ConeVertex v0{ x0,   0.0f,   z0,   nx0, ny0, nz0 };
-        ConeVertex v1{ x1,   0.0f,   z1,   nx1, ny1, nz1 };
+        ConeVertex tip{ 0.0f, height, 0.0f,  ntx, ny0, ntz, 0.0f, 0.0f };
+        ConeVertex v0{ x0,   0.0f,   z0,    nx0, ny0, nz0, 0.0f, 0.0f };
+        ConeVertex v1{ x1,   0.0f,   z1,    nx1, ny1, nz1, 0.0f, 0.0f };
 
-        // Порядок (tip, v0, v1) даёт внешнюю ориентацию треугольника
         pushTri(tip, v0, v1);
     }
 
-    // Дно (крышка снизу)
-    // Центр основания, нормаль вверх (чтобы дно было видимо сверху)
+    // Дно
     const uint32_t centerIndex = static_cast<uint32_t>(verts.size());
 
     verts.push_back(ConeVertex
         {
             0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f
+            0.0f, 1.0f, 0.0f,
+            0.5f, 0.5f
         });
 
     for (uint32_t i = 0; i < N; ++i)
@@ -98,24 +95,30 @@ inline void BuildConeMesh(uint32_t N, std::vector<ConeVertex>& verts, std::vecto
         const float a0 = twoPi * static_cast<float>(i) / static_cast<float>(N);
         const float a1 = twoPi * static_cast<float>(i + 1U) / static_cast<float>(N);
 
-        ConeVertex v0
+        float u0 = 0.5f + 0.5f * std::cos(a0);
+        float v0 = 0.5f - 0.5f * std::sin(a0);
+        float u1 = 0.5f + 0.5f * std::cos(a1);
+        float v1 = 0.5f - 0.5f * std::sin(a1);
+
+        ConeVertex v0v
         {
             std::cos(a0), 0.0f, std::sin(a0),
-            0.0f, 1.0f, 0.0f
+            0.0f, 1.0f, 0.0f,
+            u0, v0
         };
 
-        ConeVertex v1
+        ConeVertex v1v
         {
             std::cos(a1), 0.0f, std::sin(a1),
-            0.0f, 1.0f, 0.0f
+            0.0f, 1.0f, 0.0f,
+            u1, v1
         };
 
         const uint32_t base = static_cast<uint32_t>(verts.size());
 
-        verts.push_back(v0);
-        verts.push_back(v1);
+        verts.push_back(v0v);
+        verts.push_back(v1v);
 
-        // Порядок индексов задаёт нормаль +Y (фронт — сверху)
         idx.push_back(centerIndex);
         idx.push_back(base + 0);
         idx.push_back(base + 1);

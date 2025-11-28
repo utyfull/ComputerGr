@@ -48,6 +48,10 @@ public:
     /// Возвращает инкремент дескрипторов RTV для текущего устройства.
     UINT RTVInc() const { return rtvInc; }
 
+    /// Возвращает графическую командную очередь.
+    ID3D12CommandQueue* Queue() const { return queue.Get(); }
+
+
 private:
     bool CreateSwapchainAndRTVs(HWND hwnd);
     bool CreateDepthResources(UINT w, UINT h);

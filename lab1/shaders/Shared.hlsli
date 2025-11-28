@@ -6,6 +6,7 @@ struct VSInput
 {
     float3 pos : POSITION;
     float3 nrm : NORMAL;
+    float2 uv : TEXCOORD0;
 };
 
 // Материал объекта
@@ -79,7 +80,7 @@ struct SpotLight
     float cosOuter;
 };
 
-// Точечные (t1) и направленные (t2) источники
+// Точечные (t1) и прожекторы (t2)
 StructuredBuffer<PointLight> gPointLights : register(t1);
 StructuredBuffer<SpotLight> gSpotLights : register(t2);
 
@@ -95,6 +96,8 @@ struct VSOut
     float3 matAlbedo : TEXCOORD3;
     float3 matSpec : TEXCOORD4;
     float matShin : TEXCOORD5;
+
+    float2 uv : TEXCOORD6;
 };
 
 #endif // SHARED_HLSLI
