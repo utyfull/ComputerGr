@@ -47,7 +47,7 @@ cbuffer CameraCB : register(b0)
     float3 dirLightColor;
     float _pad3;
 
-    // Новое: матрица вида-проекции света
+    // матрица вида-проекции источника (для shadow map)
     float4x4 lightViewProj;
 };
 
@@ -87,12 +87,12 @@ struct SpotLight
 StructuredBuffer<PointLight> gPointLights : register(t1);
 StructuredBuffer<SpotLight> gSpotLights : register(t2);
 
-// Выход вершины
+// Выход вершины основного прохода
 struct VSOut
 {
     float4 pos : SV_Position;
     float3 nrmW : NORMAL;
-    float3 posW : TEXCOORD0;
+    float3 posW : TEXCOORD0; // мировая позиция
     float3 obj : TEXCOORD1;
     float tag : TEXCOORD2;
 
@@ -101,9 +101,6 @@ struct VSOut
     float matShin : TEXCOORD5;
 
     float2 uv : TEXCOORD6;
-
-    // НОВОЕ: позиция в пространстве света
-    float4 lightPos : TEXCOORD7;
 };
 
 #endif // SHARED_HLSLI

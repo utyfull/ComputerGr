@@ -1,12 +1,16 @@
-﻿#include "Shared.hlsli"
+﻿// ===================== Cones.hlsl =====================
+#include "Shared.hlsli"
 
-// Две текстуры и один сэмплер
+// текстуры
 Texture2D gDiffuseTex0 : register(t3); // куб 0
 Texture2D gDiffuseTex1 : register(t4); // куб 1
-Texture2D gShadowMap : register(t5); // НОВОЕ
-SamplerState gTextureSam : register(s0);
+Texture2D gShadowMap : register(t5); // shadow map
 
-// Вершинный шейдер
+// s0 – обычные текстуры, s1 – shadow map
+SamplerState gTextureSam : register(s0);
+SamplerState gShadowSam : register(s1);
+
+// ---------------- Вершинный шейдер основного прохода ----------------
 VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
 {
     uint idx = gBaseInstance + instId;
@@ -25,16 +29,12 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     o.matAlbedo = inst.mat.albedo;
     o.matSpec = inst.mat.specColor;
     o.matShin = inst.mat.shininess;
-
     o.uv = v.uv;
-
-    // НОВОЕ: позиция в пространстве света
-    o.lightPos = mul(wp, lightViewProj);
 
     return o;
 }
 
-// Модель Блинна–Фонга
+// ---------------- Blinn–Phong ----------------
 float3 BlinnPhong(
     float3 N,
     float3 V,
@@ -61,12 +61,17 @@ float3 BlinnPhong(
     return diffCol + specCol;
 }
 
-float ComputeShadow(float4 lightPos)
+// ---------------- Shadow mapping ----------------
+// worldPos – мировая позиция пикселя
+// N – нормаль в мире
+// Ld – нормализованное направление на источник (для dir light: -dirLightDir)
+float ComputeShadow(float3 worldPos, float3 N, float3 Ld)
 {
-    // Проецируем в NDC
-    float3 proj = lightPos.xyz / lightPos.w;
+    // позиция в пространстве света
+    float4 lp = mul(float4(worldPos, 1.0f), lightViewProj);
+    float3 proj = lp.xyz / lp.w;
 
-    // Если вне объёма проекции света – считаем освещённым
+    // если вне объёма света – освещено
     if (proj.x < -1.0f || proj.x > 1.0f ||
         proj.y < -1.0f || proj.y > 1.0f ||
         proj.z < 0.0f || proj.z > 1.0f)
@@ -74,20 +79,42 @@ float ComputeShadow(float4 lightPos)
         return 1.0f;
     }
 
-    // NDC [-1,1] -> UV [0,1]
+    // NDC [-1;1] -> UV [0;1]
     float2 uv = proj.xy * 0.5f + 0.5f;
-
-    // z уже в [0,1] для ortho LH
     float depth = proj.z;
 
-    float mapDepth = gShadowMap.Sample(gTextureSam, uv).r;
+    // slope-scaled bias
+    float ndotl = saturate(dot(N, Ld));
+    float bias = max(0.00005f, 0.0008f * (1.0f - ndotl));
 
-    // простой bias
-    const float bias = 0.001f;
-    return (depth - bias > mapDepth) ? 0.1f : 1.0f; // 0.1 – «немножко» света остаётся
+    // размер texel’а
+    uint w, h;
+    gShadowMap.GetDimensions(w, h);
+    float2 texelSize = 1.0f / float2((float) w, (float) h);
+
+    // небольшой PCF 2×2
+    float shadow = 0.0f;
+
+    [unroll]
+    for (int x = -1; x <= 0; ++x)
+    {
+        [unroll]
+        for (int y = -1; y <= 0; ++y)
+        {
+            float2 off = uv + float2(x, y) * texelSize;
+            // на всякий случай clamp, чтобы вообще не вылезать за [0,1]
+            off = saturate(off);
+
+            float mapDepth = gShadowMap.Sample(gShadowSam, off).r;
+            shadow += (depth - bias > mapDepth) ? 0.0f : 1.0f;
+        }
+    }
+
+    shadow *= 0.25f; // усреднение 4 выборок
+    return 0.1f + 0.9f * shadow; // не делаем тени абсолютно чёрными
 }
 
-// Пиксельный шейдер
+// ---------------- Пиксельный шейдер основного прохода ----------------
 float4 PSMain(VSOut i) : SV_TARGET
 {
     // Маркеры источников (кружочки): теги [2; 5)
@@ -96,20 +123,14 @@ float4 PSMain(VSOut i) : SV_TARGET
         float3 lightColor;
 
         if (i.tag < 2.5f)          // направленный
-        {
             lightColor = float3(1.0, 1.0, 0.2);
-        }
         else if (i.tag < 3.5f)     // прожектор 0
-        {
             lightColor = float3(1.0, 0.3, 0.3);
-        }
         else // прожектор 1
-        {
             lightColor = float3(0.3, 0.6, 1.0);
-        }
 
-        float2 uv = i.obj.xz;
-        float r = length(uv);
+        float2 uvCircle = i.obj.xz;
+        float r = length(uvCircle);
         float mask = step(r, 1.0);
 
         float3 bg = float3(0.2, 0.2, 0.2);
@@ -123,8 +144,8 @@ float4 PSMain(VSOut i) : SV_TARGET
 
     bool isFloor = (i.tag > 0.5f && i.tag < 1.5f);
     bool isCone = (i.tag < 0.5f);
-    bool isCube0 = (i.tag > 9.5f && i.tag < 10.5f); // первый куб
-    bool isCube1 = (i.tag > 10.5f && i.tag < 11.5f); // второй куб
+    bool isCube0 = (i.tag > 9.5f && i.tag < 10.5f);
+    bool isCube1 = (i.tag > 10.5f && i.tag < 11.5f);
 
     float3 matAlbedo = i.matAlbedo;
     float3 matSpec = i.matSpec;
@@ -165,23 +186,24 @@ float4 PSMain(VSOut i) : SV_TARGET
         albedo = lerp(base, stripeCol, m);
     }
 
+    // ambient не затеняем
     float3 color = ambientColor * albedo;
 
-    // Направленный свет
+    // Направленный свет + тени
     {
         float3 Ld = normalize(-dirLightDir);
+        float shadow = ComputeShadow(i.posW, N, Ld);
+
         float specScaleDir = isFloor ? 0.2f : 0.7f;
 
-        float shadow = ComputeShadow(i.lightPos);
-
         color += BlinnPhong(
-        N, V, Ld,
-        dirLightColor,
-        albedo, matSpec,
-        shininess, specScaleDir) * shadow;
+            N, V, Ld,
+            dirLightColor,
+            albedo, matSpec,
+            shininess, specScaleDir) * shadow;
     }
 
-    // Точечные источники (если будут)
+    // Точечные источники
     [loop]
     for (uint k = 0; k < gNumPointLights; ++k)
     {
@@ -192,7 +214,6 @@ float4 PSMain(VSOut i) : SV_TARGET
         float3 L = Lvec / max(dist, 1e-4f);
 
         float att = 1.0f / (1.0f + pl.attK * dist * dist);
-
         float specScalePoint = isFloor ? 0.25f : 0.8f;
 
         float3 contrib = BlinnPhong(
@@ -226,7 +247,6 @@ float4 PSMain(VSOut i) : SV_TARGET
             continue;
 
         float att = 1.0f / (1.0f + sl.attK * dist * dist);
-
         float specScaleSpot = isFloor ? 0.25f : 0.8f;
 
         float3 contrib = BlinnPhong(
@@ -241,6 +261,7 @@ float4 PSMain(VSOut i) : SV_TARGET
     return float4(color, 1.0);
 }
 
+// ---------------- Вершинный шейдер shadow-pass ----------------
 struct VSShadowOut
 {
     float4 pos : SV_Position;
@@ -254,6 +275,6 @@ VSShadowOut VSShadowMain(VSInput v, uint instId : SV_InstanceID)
     float4 wp = mul(float4(v.pos, 1.0f), inst.world);
 
     VSShadowOut o;
-    o.pos = mul(wp, lightViewProj);
+    o.pos = mul(wp, lightViewProj); // тот же lightViewProj, что и в CameraCB
     return o;
 }
