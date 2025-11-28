@@ -46,6 +46,9 @@ cbuffer CameraCB : register(b0)
 
     float3 dirLightColor;
     float _pad3;
+
+    // Новое: матрица вида-проекции света
+    float4x4 lightViewProj;
 };
 
 // Base instance и количество источников
@@ -98,6 +101,9 @@ struct VSOut
     float matShin : TEXCOORD5;
 
     float2 uv : TEXCOORD6;
+
+    // НОВОЕ: позиция в пространстве света
+    float4 lightPos : TEXCOORD7;
 };
 
 #endif // SHARED_HLSLI

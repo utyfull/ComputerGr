@@ -43,8 +43,10 @@ target_include_directories(dwin PUBLIC
 )
 
 set(SHADERS)
-compile_hlsl(SHADERS ConesVS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/Cones.hlsl" VSMain vs_6_0)
-compile_hlsl(SHADERS ConesPS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/Cones.hlsl" PSMain ps_6_0)
+compile_hlsl(SHADERS ConesVS       "${CMAKE_CURRENT_SOURCE_DIR}/shaders/Cones.hlsl" VSMain       vs_6_0)
+compile_hlsl(SHADERS ConesPS       "${CMAKE_CURRENT_SOURCE_DIR}/shaders/Cones.hlsl" PSMain       ps_6_0)
+# НОВОЕ: вершинный шейдер depth-pass для shadow map
+compile_hlsl(SHADERS ConesShadowVS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/Cones.hlsl" VSShadowMain vs_6_0)
 
 add_executable(D3D12Red WIN32
   main.cpp
@@ -62,7 +64,7 @@ add_custom_command(TARGET D3D12Red POST_BUILD
 target_include_directories(D3D12Red PRIVATE
   "${directxheaders_SOURCE_DIR}/include"
   "${CMAKE_CURRENT_SOURCE_DIR}"
-  "${CMAKE_CURRENT_SOURCE_DIR}/winui3d/include" 
+  "${CMAKE_CURRENT_SOURCE_DIR}/winui3d/include"
 )
 
 target_link_libraries(D3D12Red PRIVATE

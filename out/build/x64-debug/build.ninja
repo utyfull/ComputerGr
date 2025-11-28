@@ -111,7 +111,7 @@ build lab1\dwin.lib: CXX_STATIC_LIBRARY_LINKER__dwin_Debug lab1\CMakeFiles\dwin.
 #############################################
 # Order-only phony target for D3D12Red
 
-build cmake_object_order_depends_target_D3D12Red: phony || cmake_object_order_depends_target_dwin lab1\shaders\ConesPS.cso lab1\shaders\ConesVS.cso
+build cmake_object_order_depends_target_D3D12Red: phony || cmake_object_order_depends_target_dwin lab1\shaders\ConesPS.cso lab1\shaders\ConesShadowVS.cso lab1\shaders\ConesVS.cso
 
 build lab1\CMakeFiles\D3D12Red.dir\main.cpp.obj: CXX_COMPILER__D3D12Red_unscanned_Debug C$:\Users\pinch\cg_labs\ComputerGr\lab1\main.cpp || cmake_object_order_depends_target_D3D12Red
   DEFINES = -DNOMINMAX -DUNICODE -DWIN32_LEAN_AND_MEAN -D_UNICODE
@@ -199,6 +199,15 @@ build lab1\shaders\ConesVS.cso | ${cmake_ninja_workdir}lab1\shaders\ConesVS.cso:
 build lab1\shaders\ConesPS.cso | ${cmake_ninja_workdir}lab1\shaders\ConesPS.cso: CUSTOM_COMMAND C$:\Users\pinch\cg_labs\ComputerGr\lab1\shaders\Cones.hlsl || lab1\dwin.lib
   COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Users\pinch\cg_labs\ComputerGr\out\build\x64-debug\lab1 && C:\Users\pinch\cg_labs\ComputerGr\lab1\external\dxc\dxc.exe -T ps_6_0 -E PSMain -Fo C:/Users/pinch/cg_labs/ComputerGr/out/build/x64-debug/lab1/shaders/ConesPS.cso C:/Users/pinch/cg_labs/ComputerGr/lab1/shaders/Cones.hlsl"
   DESC = Compiling ConesPS
+  restat = 1
+
+
+#############################################
+# Custom command for lab1\shaders\ConesShadowVS.cso
+
+build lab1\shaders\ConesShadowVS.cso | ${cmake_ninja_workdir}lab1\shaders\ConesShadowVS.cso: CUSTOM_COMMAND C$:\Users\pinch\cg_labs\ComputerGr\lab1\shaders\Cones.hlsl || lab1\dwin.lib
+  COMMAND = C:\WINDOWS\system32\cmd.exe /C "cd /D C:\Users\pinch\cg_labs\ComputerGr\out\build\x64-debug\lab1 && C:\Users\pinch\cg_labs\ComputerGr\lab1\external\dxc\dxc.exe -T vs_6_0 -E VSShadowMain -Fo C:/Users/pinch/cg_labs/ComputerGr/out/build/x64-debug/lab1/shaders/ConesShadowVS.cso C:/Users/pinch/cg_labs/ComputerGr/lab1/shaders/Cones.hlsl"
+  DESC = Compiling ConesShadowVS
   restat = 1
 
 # =============================================================================

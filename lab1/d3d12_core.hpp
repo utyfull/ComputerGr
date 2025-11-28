@@ -51,6 +51,7 @@ public:
     /// Возвращает графическую командную очередь.
     ID3D12CommandQueue* Queue() const { return queue.Get(); }
 
+    D3D12_CPU_DESCRIPTOR_HANDLE DSV() const { return dsv; }
 
 private:
     bool CreateSwapchainAndRTVs(HWND hwnd);

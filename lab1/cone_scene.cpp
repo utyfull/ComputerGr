@@ -34,6 +34,9 @@ struct CameraCBData
 
     XMFLOAT3   dirLightColor;
     float      _pad3;
+
+    // для shadow mapping
+    XMFLOAT4X4 lightViewProj;
 };
 
 struct MaterialCPU
@@ -47,8 +50,8 @@ struct MaterialCPU
 
 struct InstanceDataCPU
 {
-    XMFLOAT4X4 world;
-    XMFLOAT4   tag;
+    XMFLOAT4X4  world;
+    XMFLOAT4    tag;
     MaterialCPU mat;
 };
 
@@ -128,7 +131,6 @@ static bool LoadTextureWIC(
 }
 
 // ---------------- Helper для текстуры в DEFAULT-heap ----------------
-// ВАЖНО: теперь функция возвращает bool, чтобы CHECK_HR мог делать return false;
 
 static bool CreateTextureRGBA8_Default(
     ID3D12Device* device,
@@ -254,13 +256,13 @@ bool ConeScene::Init(D3D12Core& core)
 {
     ID3D12Device* device = core.Dev();
 
-    // Root signature: b0, t0..t4, b1
+    // Root signature: b0, t0..t5, b1
     CD3DX12_ROOT_PARAMETER rp[3];
 
     rp[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
 
     CD3DX12_DESCRIPTOR_RANGE range;
-    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0);  // t0..t4
+    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 6, 0);  // t0..t5
     rp[1].InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_ALL);
 
     rp[2].InitAsConstants(3, 1, 0, D3D12_SHADER_VISIBILITY_ALL);
@@ -307,8 +309,11 @@ bool ConeScene::Init(D3D12Core& core)
     // Шейдеры
     ComPtr<ID3DBlob> vs;
     ComPtr<ID3DBlob> ps;
+    ComPtr<ID3DBlob> vsShadow;
+
     CHECK_HR("Read VS", D3DReadFileToBlob(L"shaders/ConesVS.cso", &vs));
     CHECK_HR("Read PS", D3DReadFileToBlob(L"shaders/ConesPS.cso", &ps));
+    CHECK_HR("Read ShadowVS", D3DReadFileToBlob(L"shaders/ConesShadowVS.cso", &vsShadow));
 
     // Input layout (позиция / нормаль / UV)
     D3D12_INPUT_ELEMENT_DESC il[] =
@@ -318,6 +323,7 @@ bool ConeScene::Init(D3D12Core& core)
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
     };
 
+    // Основной PSO
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
     psoDesc.InputLayout = { il, _countof(il) };
     psoDesc.pRootSignature = rootSig.Get();
@@ -345,6 +351,34 @@ bool ConeScene::Init(D3D12Core& core)
         "CreateGraphicsPipelineState",
         device->CreateGraphicsPipelineState(
             &psoDesc, IID_PPV_ARGS(&pso)));
+
+    // Shadow PSO (depth-only)
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC shadowDesc{};
+    shadowDesc.InputLayout = { il, _countof(il) };
+    shadowDesc.pRootSignature = rootSig.Get();
+    shadowDesc.VS = { vsShadow->GetBufferPointer(), vsShadow->GetBufferSize() };
+    shadowDesc.PS = {}; // без пиксельного шейдера
+    shadowDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    shadowDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    shadowDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    D3D12_DEPTH_STENCIL_DESC dsShadow{};
+    dsShadow.DepthEnable = TRUE;
+    dsShadow.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    dsShadow.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    dsShadow.StencilEnable = FALSE;
+    shadowDesc.DepthStencilState = dsShadow;
+
+    shadowDesc.SampleMask = UINT_MAX;
+    shadowDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    shadowDesc.NumRenderTargets = 0;
+    shadowDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    shadowDesc.SampleDesc.Count = 1;
+
+    CHECK_HR(
+        "CreateShadowPSO",
+        device->CreateGraphicsPipelineState(
+            &shadowDesc, IID_PPV_ARGS(&shadowPso)));
 
     // ---------- Геометрия конусов ----------
     std::vector<ConeVertex> verts;
@@ -628,7 +662,58 @@ bool ConeScene::Init(D3D12Core& core)
         spot_[1].strength = 0.5f;
     }
 
-    // ---------- две текстуры (вторая — если не найдётся файл, будет фиолетовой) ----------
+    // ---------- Shadow map для направленного света ----------
+    {
+        D3D12_RESOURCE_DESC smDesc{};
+        smDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        smDesc.Alignment = 0;
+        smDesc.Width = ShadowMapSize;
+        smDesc.Height = ShadowMapSize;
+        smDesc.DepthOrArraySize = 1;
+        smDesc.MipLevels = 1;
+        smDesc.Format = DXGI_FORMAT_R32_TYPELESS;
+        smDesc.SampleDesc.Count = 1;
+        smDesc.SampleDesc.Quality = 0;
+        smDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+        smDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+        D3D12_CLEAR_VALUE clear{};
+        clear.Format = DXGI_FORMAT_D32_FLOAT;
+        clear.DepthStencil.Depth = 1.0f;
+        clear.DepthStencil.Stencil = 0;
+
+        auto heapDefault = CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT);
+
+        CHECK_HR(
+            "Create ShadowMap",
+            device->CreateCommittedResource(
+                &heapDefault,
+                D3D12_HEAP_FLAG_NONE,
+                &smDesc,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                &clear,
+                IID_PPV_ARGS(&shadowMap)));
+
+        D3D12_DESCRIPTOR_HEAP_DESC dsvDesc{};
+        dsvDesc.NumDescriptors = 1;
+        dsvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+        CHECK_HR(
+            "Create Shadow DSV heap",
+            device->CreateDescriptorHeap(&dsvDesc, IID_PPV_ARGS(&shadowDSVHeap)));
+
+        shadowDSV = shadowDSVHeap->GetCPUDescriptorHandleForHeapStart();
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsvView{};
+        dsvView.Format = DXGI_FORMAT_D32_FLOAT;
+        dsvView.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsvView.Flags = D3D12_DSV_FLAG_NONE;
+
+        device->CreateDepthStencilView(shadowMap.Get(), &dsvView, shadowDSV);
+    }
+
+    // ---------- две текстуры ----------
     if (!CreateTextureRGBA8_Default(
         device,
         core.Queue(),
@@ -647,9 +732,9 @@ bool ConeScene::Init(D3D12Core& core)
         return false;
     }
 
-    // ---------- SRV heap: t0..t4 ----------
+    // ---------- SRV heap: t0..t5 ----------
     D3D12_DESCRIPTOR_HEAP_DESC hd{};
-    hd.NumDescriptors = 5;
+    hd.NumDescriptors = 6;
     hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
@@ -739,6 +824,24 @@ bool ConeScene::Init(D3D12Core& core)
             diffuseTex1.Get(), &srv, hCPU);
     }
 
+    // t5: shadow map
+    hCPU.ptr += srvInc;
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = DXGI_FORMAT_R32_FLOAT;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Texture2D.MipLevels = 1;
+        srv.Texture2D.MostDetailedMip = 0;
+        srv.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        device->CreateShaderResourceView(
+            shadowMap.Get(), &srv, hCPU);
+    }
+
+    shadowSRV = srvGpu;
+    shadowSRV.ptr += srvInc * 5;
+
     // --------- проекция / камера ---------
     baseAspect_ = (core.Height() > 0)
         ? static_cast<float>(core.Width()) / static_cast<float>(core.Height())
@@ -817,6 +920,37 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
 
         XMVECTOR pos = XMVectorScale(-d, 8.0f);
         XMStoreFloat3(&dirLightPos, pos);
+    }
+
+    // матрица вида-проекции света
+    {
+        XMVECTOR lightDir = XMVector3Normalize(
+            XMVectorSet(cbd.dirLightDir.x, cbd.dirLightDir.y, cbd.dirLightDir.z, 0.0f));
+
+        XMVECTOR lightPos = XMVectorScale(-lightDir, 8.0f);
+        XMVECTOR lightTarget = XMVectorZero();
+
+        XMVECTOR up = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        float dotUp = 0.0f;
+        XMStoreFloat(&dotUp, XMVector3Dot(lightDir, up));
+        if (fabsf(dotUp) > 0.99f)
+        {
+            up = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
+        }
+
+        XMMATRIX lightView = XMMatrixLookAtLH(lightPos, lightTarget, up);
+
+        const float lightOrthoSize = 10.0f;
+        const float lightNear = 0.1f;
+        const float lightFar = 30.0f;
+
+        XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(
+            -lightOrthoSize, lightOrthoSize,
+            -lightOrthoSize, lightOrthoSize,
+            lightNear, lightFar);
+
+        XMMATRIX lightVP = lightView * lightProj;
+        XMStoreFloat4x4(&cbd.lightViewProj, XMMatrixTranspose(lightVP));
     }
 
     {
@@ -969,20 +1103,20 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     inst[6].tag = XMFLOAT4(4.0f, 0.0f, 0.0f, 0.0f);
     inst[6].mat = markerMat;
 
-    // куб 0 (текстура 0)
+    // куб 0
     XMMATRIX wCube0 =
         XMMatrixScaling(0.8f, 0.8f, 0.8f) *
         XMMatrixTranslation(0.0f, 0.8f, 1.5f);
     xm2worldT(wCube0, inst[7].world);
-    inst[7].tag = XMFLOAT4(10.0f, 0.0f, 0.0f, 0.0f); // tag для gDiffuseTex0
+    inst[7].tag = XMFLOAT4(10.0f, 0.0f, 0.0f, 0.0f);
     inst[7].mat = cubeMat;
 
-    // куб 1 (текстура 1)
+    // куб 1
     XMMATRIX wCube1 =
         XMMatrixScaling(0.8f, 0.8f, 0.8f) *
         XMMatrixTranslation(2.0f, 0.8f, 1.5f);
     xm2worldT(wCube1, inst[8].world);
-    inst[8].tag = XMFLOAT4(11.0f, 0.0f, 0.0f, 0.0f); // tag для gDiffuseTex1
+    inst[8].tag = XMFLOAT4(11.0f, 0.0f, 0.0f, 0.0f);
     inst[8].mat = cubeMat;
 
     {
@@ -995,39 +1129,102 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     ID3D12DescriptorHeap* heaps[] = { srvHeap.Get() };
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(rootSig.Get());
-    list->SetPipelineState(pso.Get());
-    list->RSSetViewports(1, &vpFull);
-    list->RSSetScissorRects(1, &sc);
     list->SetGraphicsRootConstantBufferView(0, camCB->GetGPUVirtualAddress());
     list->SetGraphicsRootDescriptorTable(1, srvGpu);
-
-    const float clear[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
-    list->ClearRenderTargetView(rtv, clear, 0, nullptr);
-
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
     uint32_t objCB[3]{};
     objCB[1] = numPointLights_;
     objCB[2] = numSpotLights_;
 
-    // пол + маркеры (3..6)
+    // ---------------- 1) Shadow pass ----------------
+
+    {
+        auto toDepth = CD3DX12_RESOURCE_BARRIER::Transition(
+            shadowMap.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        list->ResourceBarrier(1, &toDepth);
+    }
+
+    D3D12_VIEWPORT vpShadow{};
+    vpShadow.TopLeftX = 0.0f;
+    vpShadow.TopLeftY = 0.0f;
+    vpShadow.Width = static_cast<float>(ShadowMapSize);
+    vpShadow.Height = static_cast<float>(ShadowMapSize);
+    vpShadow.MinDepth = 0.0f;
+    vpShadow.MaxDepth = 1.0f;
+
+    D3D12_RECT scShadow{ 0, 0, (LONG)ShadowMapSize, (LONG)ShadowMapSize };
+
+    list->SetPipelineState(shadowPso.Get());
+    list->RSSetViewports(1, &vpShadow);
+    list->RSSetScissorRects(1, &scShadow);
+
+    list->OMSetRenderTargets(0, nullptr, FALSE, &shadowDSV);
+    list->ClearDepthStencilView(
+        shadowDSV, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    // пол + маркеры
     list->IASetVertexBuffers(0, 1, &floorVBV);
     list->IASetIndexBuffer(&floorIBV);
     objCB[0] = 3u;
     list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
     list->DrawIndexedInstanced(floorIndexCount, 4, 0, 0, 0);
 
-    // конусы (0..2)
+    // конусы
     list->IASetVertexBuffers(0, 1, &vbv);
     list->IASetIndexBuffer(&ibv);
     objCB[0] = 0u;
     list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
     list->DrawIndexedInstanced(indexCount, 3, 0, 0, 0);
 
-    // кубы (7, 8)
+    // кубы
     list->IASetVertexBuffers(0, 1, &cubeVBV);
     list->IASetIndexBuffer(&cubeIBV);
-    objCB[0] = 7u; // baseInstance
+    objCB[0] = 7u;
+    list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
+    list->DrawIndexedInstanced(cubeIndexCount, 2, 0, 0, 0);
+
+    {
+        auto toSRV = CD3DX12_RESOURCE_BARRIER::Transition(
+            shadowMap.Get(),
+            D3D12_RESOURCE_STATE_DEPTH_WRITE,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        list->ResourceBarrier(1, &toSRV);
+    }
+
+    // ---------------- 2) Основной pass ----------------
+
+    list->SetPipelineState(pso.Get());
+    list->RSSetViewports(1, &vpFull);
+    list->RSSetScissorRects(1, &sc);
+
+    auto dsvMain = core.DSV();
+    list->OMSetRenderTargets(1, &rtv, FALSE, &dsvMain);
+
+    const float clear[4] = { 0.2f, 0.2f, 0.2f, 1.0f };
+    list->ClearRenderTargetView(rtv, clear, 0, nullptr);
+    list->ClearDepthStencilView(dsvMain, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+    // пол + маркеры
+    list->IASetVertexBuffers(0, 1, &floorVBV);
+    list->IASetIndexBuffer(&floorIBV);
+    objCB[0] = 3u;
+    list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
+    list->DrawIndexedInstanced(floorIndexCount, 4, 0, 0, 0);
+
+    // конусы
+    list->IASetVertexBuffers(0, 1, &vbv);
+    list->IASetIndexBuffer(&ibv);
+    objCB[0] = 0u;
+    list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
+    list->DrawIndexedInstanced(indexCount, 3, 0, 0, 0);
+
+    // кубы
+    list->IASetVertexBuffers(0, 1, &cubeVBV);
+    list->IASetIndexBuffer(&cubeIBV);
+    objCB[0] = 7u;
     list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
     list->DrawIndexedInstanced(cubeIndexCount, 2, 0, 0, 0);
 }

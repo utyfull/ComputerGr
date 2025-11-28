@@ -29,8 +29,11 @@ public:
     }
 
 private:
+    static constexpr UINT ShadowMapSize = 2048;
+
     ComPtr<ID3D12RootSignature> rootSig;
-    ComPtr<ID3D12PipelineState> pso;
+    ComPtr<ID3D12PipelineState> pso;        // основной PSO
+    ComPtr<ID3D12PipelineState> shadowPso;  // depth-only PSO для shadow map
 
     // конусы
     ComPtr<ID3D12Resource> vb;
@@ -93,4 +96,10 @@ private:
     DirectX::XMFLOAT3 camPos_{ 0.0f, 0.6f, -3.0f };
     float             camYaw_ = 0.0f;
     float             camPitch_ = 0.0f;
+
+    // ресурсы для shadow map
+    ComPtr<ID3D12Resource> shadowMap;
+    ComPtr<ID3D12DescriptorHeap> shadowDSVHeap;
+    D3D12_CPU_DESCRIPTOR_HANDLE shadowDSV{};
+    D3D12_GPU_DESCRIPTOR_HANDLE shadowSRV{};
 };

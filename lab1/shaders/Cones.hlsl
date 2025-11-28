@@ -3,6 +3,7 @@
 // Две текстуры и один сэмплер
 Texture2D gDiffuseTex0 : register(t3); // куб 0
 Texture2D gDiffuseTex1 : register(t4); // куб 1
+Texture2D gShadowMap : register(t5); // НОВОЕ
 SamplerState gTextureSam : register(s0);
 
 // Вершинный шейдер
@@ -26,6 +27,9 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     o.matShin = inst.mat.shininess;
 
     o.uv = v.uv;
+
+    // НОВОЕ: позиция в пространстве света
+    o.lightPos = mul(wp, lightViewProj);
 
     return o;
 }
@@ -55,6 +59,32 @@ float3 BlinnPhong(
     float3 specCol = specColor * lightColor * (specular * specScale);
 
     return diffCol + specCol;
+}
+
+float ComputeShadow(float4 lightPos)
+{
+    // Проецируем в NDC
+    float3 proj = lightPos.xyz / lightPos.w;
+
+    // Если вне объёма проекции света – считаем освещённым
+    if (proj.x < -1.0f || proj.x > 1.0f ||
+        proj.y < -1.0f || proj.y > 1.0f ||
+        proj.z < 0.0f || proj.z > 1.0f)
+    {
+        return 1.0f;
+    }
+
+    // NDC [-1,1] -> UV [0,1]
+    float2 uv = proj.xy * 0.5f + 0.5f;
+
+    // z уже в [0,1] для ortho LH
+    float depth = proj.z;
+
+    float mapDepth = gShadowMap.Sample(gTextureSam, uv).r;
+
+    // простой bias
+    const float bias = 0.001f;
+    return (depth - bias > mapDepth) ? 0.1f : 1.0f; // 0.1 – «немножко» света остаётся
 }
 
 // Пиксельный шейдер
@@ -142,11 +172,13 @@ float4 PSMain(VSOut i) : SV_TARGET
         float3 Ld = normalize(-dirLightDir);
         float specScaleDir = isFloor ? 0.2f : 0.7f;
 
+        float shadow = ComputeShadow(i.lightPos);
+
         color += BlinnPhong(
-            N, V, Ld,
-            dirLightColor,
-            albedo, matSpec,
-            shininess, specScaleDir);
+        N, V, Ld,
+        dirLightColor,
+        albedo, matSpec,
+        shininess, specScaleDir) * shadow;
     }
 
     // Точечные источники (если будут)
@@ -207,4 +239,21 @@ float4 PSMain(VSOut i) : SV_TARGET
     }
 
     return float4(color, 1.0);
+}
+
+struct VSShadowOut
+{
+    float4 pos : SV_Position;
+};
+
+VSShadowOut VSShadowMain(VSInput v, uint instId : SV_InstanceID)
+{
+    uint idx = gBaseInstance + instId;
+    InstanceData inst = gInstances[idx];
+
+    float4 wp = mul(float4(v.pos, 1.0f), inst.world);
+
+    VSShadowOut o;
+    o.pos = mul(wp, lightViewProj);
+    return o;
 }
