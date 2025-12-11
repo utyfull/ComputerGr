@@ -1,5 +1,4 @@
-﻿// ===================== Cones.hlsl =====================
-#include "Shared.hlsli"
+﻿#include "Shared.hlsli"
 
 // текстуры
 Texture2D gDiffuseTex0 : register(t3); // куб 0
@@ -17,7 +16,8 @@ VSOut VSMain(VSInput v, uint instId : SV_InstanceID)
     InstanceData inst = gInstances[idx];
 
     float4 wp = mul(float4(v.pos, 1.0f), inst.world);
-    float3 wn = mul((float3x3) inst.world, v.nrm);
+    float3 wn = mul(v.nrm, (float3x3) inst.world);
+    wn = normalize(wn);
 
     VSOut o;
     o.pos = mul(wp, viewProj);
@@ -67,11 +67,14 @@ float3 BlinnPhong(
 // Ld – нормализованное направление на источник (для dir light: -dirLightDir)
 float ComputeShadow(float3 worldPos, float3 N, float3 Ld)
 {
+    // normal-offset, чтобы уменьшить self-shadowing
+    float3 offsetPos = worldPos + N * 0.003f;
+
     // позиция в пространстве света
-    float4 lp = mul(float4(worldPos, 1.0f), lightViewProj);
+    float4 lp = mul(float4(offsetPos, 1.0f), lightViewProj);
     float3 proj = lp.xyz / lp.w;
 
-    // если вне объёма света – освещено
+    // если вне объёма света – считаем освещённым
     if (proj.x < -1.0f || proj.x > 1.0f ||
         proj.y < -1.0f || proj.y > 1.0f ||
         proj.z < 0.0f || proj.z > 1.0f)
@@ -85,33 +88,39 @@ float ComputeShadow(float3 worldPos, float3 N, float3 Ld)
 
     // slope-scaled bias
     float ndotl = saturate(dot(N, Ld));
-    float bias = max(0.00005f, 0.0008f * (1.0f - ndotl));
+    float bias = max(0.0015f, 0.0035f * (1.0f - ndotl));
 
     // размер texel’а
     uint w, h;
     gShadowMap.GetDimensions(w, h);
     float2 texelSize = 1.0f / float2((float) w, (float) h);
 
-    // небольшой PCF 2×2
+    // PCF 5×5 вокруг текущего texel'а
     float shadow = 0.0f;
+    const int radius = 2; // радиус ядра в texel'ах
+    const int kernelSize = (radius * 2 + 1);
+    const float invKernelArea = 1.0f / (kernelSize * kernelSize);
 
     [unroll]
-    for (int x = -1; x <= 0; ++x)
+    for (int x = -radius; x <= radius; ++x)
     {
         [unroll]
-        for (int y = -1; y <= 0; ++y)
+        for (int y = -radius; y <= radius; ++y)
         {
             float2 off = uv + float2(x, y) * texelSize;
-            // на всякий случай clamp, чтобы вообще не вылезать за [0,1]
             off = saturate(off);
 
             float mapDepth = gShadowMap.Sample(gShadowSam, off).r;
+
+            // 1.0 – освещён, 0.0 – в тени
             shadow += (depth - bias > mapDepth) ? 0.0f : 1.0f;
         }
     }
 
-    shadow *= 0.25f; // усреднение 4 выборок
-    return 0.1f + 0.9f * shadow; // не делаем тени абсолютно чёрными
+    shadow *= invKernelArea;
+
+    // не делаем тень абсолютно чёрной – минимум 20 % света
+    return 0.2f + 0.8f * shadow;
 }
 
 // ---------------- Пиксельный шейдер основного прохода ----------------
@@ -146,6 +155,7 @@ float4 PSMain(VSOut i) : SV_TARGET
     bool isCone = (i.tag < 0.5f);
     bool isCube0 = (i.tag > 9.5f && i.tag < 10.5f);
     bool isCube1 = (i.tag > 10.5f && i.tag < 11.5f);
+    bool isCube = (isCube0 || isCube1);
 
     float3 matAlbedo = i.matAlbedo;
     float3 matSpec = i.matSpec;
@@ -193,6 +203,14 @@ float4 PSMain(VSOut i) : SV_TARGET
     {
         float3 Ld = normalize(-dirLightDir);
         float shadow = ComputeShadow(i.posW, N, Ld);
+
+        // отключаем тени для граней кубов (self-shadow)
+        if (isCube)
+        {
+            shadow = 1.0f;
+            // если хочется чуть-чуть мягкого заглушения, вместо 1.0f можно:
+            // shadow = saturate(0.7f + 0.3f * shadow);
+        }
 
         float specScaleDir = isFloor ? 0.2f : 0.7f;
 

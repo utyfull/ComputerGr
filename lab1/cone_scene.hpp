@@ -28,8 +28,13 @@ public:
             spot_[index].strength = s;
     }
 
+    // смещения направления света по X/Y/Z (в мировых координатах относительно центра сцены)
+    void SetDirOffsetX(float v) { dirOffsetX_ = v; }
+    void SetDirOffsetY(float v) { dirOffsetY_ = v; }
+    void SetDirOffsetZ(float v) { dirOffsetZ_ = v; }
+
 private:
-    static constexpr UINT ShadowMapSize = 2048;
+    static constexpr UINT ShadowMapSize = 4096;
 
     ComPtr<ID3D12RootSignature> rootSig;
     ComPtr<ID3D12PipelineState> pso;        // основной PSO
@@ -87,6 +92,11 @@ private:
     DirectX::XMFLOAT3 dirColorBase_{ 0.6f, 0.6f, 0.7f };
     float dirStrength_ = 1.0f;
 
+    // смещения для направленного света (управляются слайдерами)
+    float dirOffsetX_ = 0.0f;
+    float dirOffsetY_ = 0.0f;
+    float dirOffsetZ_ = 0.0f;
+
     float angle_ = 0.0f;
     float spinSpeed_ = 1.2f;
 
@@ -98,8 +108,8 @@ private:
     float             camPitch_ = 0.0f;
 
     // ресурсы для shadow map
-    ComPtr<ID3D12Resource> shadowMap;
+    ComPtr<ID3D12Resource>       shadowMap;
     ComPtr<ID3D12DescriptorHeap> shadowDSVHeap;
-    D3D12_CPU_DESCRIPTOR_HANDLE shadowDSV{};
-    D3D12_GPU_DESCRIPTOR_HANDLE shadowSRV{};
+    D3D12_CPU_DESCRIPTOR_HANDLE  shadowDSV{};
+    D3D12_GPU_DESCRIPTOR_HANDLE  shadowSRV{};
 };

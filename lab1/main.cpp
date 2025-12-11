@@ -100,7 +100,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 {
     constexpr int W = 1600;
     constexpr int H = 900;
-    constexpr int TOP_BAR_H = 150; // высота полосы с контролами
+    constexpr int TOP_BAR_H = 234; // чуть выше, т.к. строк стало ещё больше
 
     ConeMainWindow mainWin;
     if (!mainWin.create(
@@ -126,52 +126,58 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
 
     // Подписи
     HWND lblSpeed = CreateWindowExW(
-        0,
-        L"STATIC",
-        L"Spin:",
+        0, L"STATIC", L"Spin:",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         16, 24, 80, 20,
         topBox, nullptr, hInst, nullptr);
 
     HWND lblAmb = CreateWindowExW(
-        0,
-        L"STATIC",
-        L"Ambient:",
+        0, L"STATIC", L"Ambient:",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         16, 48, 80, 20,
         topBox, nullptr, hInst, nullptr);
 
-    HWND lblDir = CreateWindowExW(
-        0,
-        L"STATIC",
-        L"Directional:",
+    HWND lblDirStr = CreateWindowExW(
+        0, L"STATIC", L"Directional:",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         16, 72, 80, 20,
         topBox, nullptr, hInst, nullptr);
 
-    HWND lblSpot0 = CreateWindowExW(
-        0,
-        L"STATIC",
-        L"Spot 0:",
+    HWND lblDirX = CreateWindowExW(
+        0, L"STATIC", L"Dir X:",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         16, 96, 80, 20,
         topBox, nullptr, hInst, nullptr);
 
-    HWND lblSpot1 = CreateWindowExW(
-        0,
-        L"STATIC",
-        L"Spot 1:",
+    HWND lblDirY = CreateWindowExW(
+        0, L"STATIC", L"Dir Y:",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
         16, 120, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblDirZ = CreateWindowExW(
+        0, L"STATIC", L"Dir Z:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 144, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblSpot0 = CreateWindowExW(
+        0, L"STATIC", L"Spot 0:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 168, 80, 20,
+        topBox, nullptr, hInst, nullptr);
+
+    HWND lblSpot1 = CreateWindowExW(
+        0, L"STATIC", L"Spot 1:",
+        WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+        16, 192, 80, 20,
         topBox, nullptr, hInst, nullptr);
 
     // Слайдеры
     Slider sliderSpeed;
     sliderSpeed.st = { 0.0f, 6.0f, 1.2f };
     sliderSpeed.create(
-        L"DWin.Slider",
-        L"",
-        WS_CHILD | WS_VISIBLE,
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
         0,
         90, 24, 220, 20,
         topBox);
@@ -179,41 +185,61 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     Slider sliderAmbient;
     sliderAmbient.st = { 0.0f, 3.0f, 1.0f };
     sliderAmbient.create(
-        L"DWin.Slider",
-        L"",
-        WS_CHILD | WS_VISIBLE,
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
         0,
         90, 48, 220, 20,
         topBox);
 
-    Slider sliderDir;
-    sliderDir.st = { 0.0f, 3.0f, 1.0f };
-    sliderDir.create(
-        L"DWin.Slider",
-        L"",
-        WS_CHILD | WS_VISIBLE,
+    // интенсивность направленного
+    Slider sliderDirStrength;
+    sliderDirStrength.st = { 0.0f, 3.0f, 1.0f };
+    sliderDirStrength.create(
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
         0,
         90, 72, 220, 20,
+        topBox);
+
+    // смещение направленного света по X
+    Slider sliderDirX;
+    sliderDirX.st = { -8.0f, 8.0f, 0.0f };
+    sliderDirX.create(
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
+        0,
+        90, 96, 220, 20,
+        topBox);
+
+    // смещение направленного света по Y (по высоте)
+    Slider sliderDirY;
+    sliderDirY.st = { -4.0f, 4.0f, 0.0f };
+    sliderDirY.create(
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
+        0,
+        90, 120, 220, 20,
+        topBox);
+
+    // смещение направленного света по Z
+    Slider sliderDirZ;
+    sliderDirZ.st = { -8.0f, 8.0f, 0.0f };
+    sliderDirZ.create(
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
+        0,
+        90, 144, 220, 20,
         topBox);
 
     Slider sliderSpot0;
     sliderSpot0.st = { 0.0f, 3.0f, 1.2f };
     sliderSpot0.create(
-        L"DWin.Slider",
-        L"",
-        WS_CHILD | WS_VISIBLE,
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
         0,
-        90, 96, 220, 20,
+        90, 168, 220, 20,
         topBox);
 
     Slider sliderSpot1;
     sliderSpot1.st = { 0.0f, 3.0f, 0.5f };
     sliderSpot1.create(
-        L"DWin.Slider",
-        L"",
-        WS_CHILD | WS_VISIBLE,
+        L"DWin.Slider", L"", WS_CHILD | WS_VISIBLE,
         0,
-        90, 120, 220, 20,
+        90, 192, 220, 20,
         topBox);
 
     CheckBox pause;
@@ -222,8 +248,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     // Вьюпорт с D3D12
     ConeViewport vp;
     vp.create(
-        L"DWin.Viewport",
-        L"",
+        L"DWin.Viewport", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
         0,
         0, TOP_BAR_H, W, H - TOP_BAR_H,
@@ -248,7 +273,10 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
     // Начальные значения
     scene.SetSpinSpeed(sliderSpeed.st.value);
     scene.SetAmbientStrength(sliderAmbient.st.value);
-    scene.SetDirStrength(sliderDir.st.value);
+    scene.SetDirStrength(sliderDirStrength.st.value);
+    scene.SetDirOffsetX(sliderDirX.st.value);
+    scene.SetDirOffsetY(sliderDirY.st.value);
+    scene.SetDirOffsetZ(sliderDirZ.st.value);
     scene.SetSpotStrength(0, sliderSpot0.st.value);
     scene.SetSpotStrength(1, sliderSpot1.st.value);
     UpdateTitle();
@@ -281,8 +309,20 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
             MoveWindow(sliderAmbient.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
 
             rowY += 24;
-            MoveWindow(lblDir, labelX, rowY, 80, rowH, TRUE);
-            MoveWindow(sliderDir.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+            MoveWindow(lblDirStr, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderDirStrength.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblDirX, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderDirX.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblDirY, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderDirY.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
+
+            rowY += 24;
+            MoveWindow(lblDirZ, labelX, rowY, 80, rowH, TRUE);
+            MoveWindow(sliderDirZ.hwnd(), sliderX, rowY, sliderW, rowH, TRUE);
 
             rowY += 24;
             MoveWindow(lblSpot0, labelX, rowY, 80, rowH, TRUE);
@@ -314,10 +354,28 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
                 gScene->SetAmbientStrength(v);
         };
 
-    sliderDir.onChange = [&](float v)
+    sliderDirStrength.onChange = [&](float v)
         {
             if (gScene)
                 gScene->SetDirStrength(v);
+        };
+
+    sliderDirX.onChange = [&](float v)
+        {
+            if (gScene)
+                gScene->SetDirOffsetX(v);
+        };
+
+    sliderDirY.onChange = [&](float v)
+        {
+            if (gScene)
+                gScene->SetDirOffsetY(v);
+        };
+
+    sliderDirZ.onChange = [&](float v)
+        {
+            if (gScene)
+                gScene->SetDirOffsetZ(v);
         };
 
     sliderSpot0.onChange = [&](float v)
@@ -346,9 +404,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int)
             if (!pause.checked() && gScene)
             {
                 const float moveSpeed = 2.0f;
-                float       dx = 0.0f;
-                float       dy = 0.0f;
-                float       dz = 0.0f;
+                float dx = 0.0f;
+                float dy = 0.0f;
+                float dz = 0.0f;
 
                 if (GetAsyncKeyState('W') & 0x8000) dz += moveSpeed * dt;
                 if (GetAsyncKeyState('S') & 0x8000) dz -= moveSpeed * dt;

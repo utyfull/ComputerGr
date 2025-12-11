@@ -892,7 +892,7 @@ void ConeScene::RotateCamera(float dYaw, float dPitch)
     camPitch_ += dPitch;
 
     const float limit = XM_PIDIV2 - 0.01f;
-    if (camPitch_ > limit)  camPitch_ = limit;
+    if (camPitch_ > limit) camPitch_ = limit;
     if (camPitch_ < -limit) camPitch_ = -limit;
 }
 
@@ -915,32 +915,43 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     XMMATRIX camWorld = camRot * camTrans;
     XMMATRIX view = XMMatrixInverse(nullptr, camWorld);
 
-    // позиция направленного света
-    XMFLOAT3 dirLightPos{ 0.0f, 3.0f, 0.0f };
+    // ---------- направленный свет: позиция управляется по трём осям ----------
+    // центр между двумя кубами (в мировой системе)
+    XMVECTOR lightFocus = XMVectorSet(1.0f, 0.8f, 1.5f, 0.0f);
 
-    // ---------- матрица вида-проекции света ----------
+    const float baseHeightOffset = 6.0f;  // базовая высота над сценой
+
+    XMFLOAT4 focusPos{};
+    XMStoreFloat4(&focusPos, lightFocus);
+
+    // смещения dirOffsetX_/Y_/Z_ задаются слайдерами
+    float lightX = focusPos.x + dirOffsetX_;
+    float lightY = focusPos.y + baseHeightOffset + dirOffsetY_;
+    float lightZ = focusPos.z + dirOffsetZ_;
+
+    XMVECTOR lightPos = XMVectorSet(lightX, lightY, lightZ, 0.0f);
+    XMVECTOR lightTarget = lightFocus;
+
+    // направление света "из источника к сцене"
     XMVECTOR lightDir = XMVector3Normalize(
-        XMVectorSet(0.0f, -1.0f, 0.0f, 0.0f));
+        XMVectorSubtract(lightTarget, lightPos));
 
-    XMVECTOR lightPos = XMVectorScale(lightDir, -12.0f);
-    XMVECTOR lightTarget = XMVectorZero();
-
-    // корректный up
+    // фиксированный up
     XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-    float dotUp = XMVectorGetX(XMVector3Dot(lightDir, worldUp));
-    if (fabsf(dotUp) > 0.99f)
-        worldUp = XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f);
 
     XMMATRIX lightView = XMMatrixLookAtLH(lightPos, lightTarget, worldUp);
 
-    const float orthoHalfSize = 10.0f;
+    const float orthoHalfSize = 6.0f;
     XMMATRIX lightProj = XMMatrixOrthographicOffCenterLH(
         -orthoHalfSize, orthoHalfSize,
         -orthoHalfSize, orthoHalfSize,
         0.1f, 50.0f);
 
     XMMATRIX lightViewProjM = lightView * lightProj;
-    XMStoreFloat3(&dirLightPos, lightPos);   // только позиция тут
+
+    // позиция для маркера направленного света
+    XMFLOAT3 dirLightPos{};
+    XMStoreFloat3(&dirLightPos, lightPos);
 
     // ---------- CameraCB ----------
     CameraCBData cbd{};
@@ -964,7 +975,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
         cbd.dirLightColor = dirCol;
     }
 
-    // ВОТ ЗДЕСЬ:
     XMStoreFloat4x4(&cbd.lightViewProj, XMMatrixTranspose(lightViewProjM));
 
     {
@@ -999,8 +1009,8 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     }
 
     // ---------- viewport crop ----------
-    int VW = core.Width();
-    int VH = core.Height();
+    int   VW = core.Width();
+    int   VH = core.Height();
     float currentAspect = (VH > 0)
         ? static_cast<float>(VW) / static_cast<float>(VH)
         : baseAspect_;
@@ -1018,13 +1028,13 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     }
 
     const D3D12_VIEWPORT vpFull = core.Viewport();
-    D3D12_RECT sc{ bx, by, bx + bw, by + bh };
+    D3D12_RECT           sc{ bx, by, bx + bw, by + bh };
 
     // ---------- анимация конусов ----------
     using Clock = std::chrono::steady_clock;
     static Clock::time_point prev = Clock::now();
-    Clock::time_point now = Clock::now();
-    float dt = std::chrono::duration<float>(now - prev).count();
+    Clock::time_point        now = Clock::now();
+    float                    dt = std::chrono::duration<float>(now - prev).count();
     prev = now;
     angle_ += dt * spinSpeed_;
 
@@ -1058,13 +1068,12 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
 
     // конусы 0..2
     XMFLOAT3 s{ 0.12f, 0.30f, 0.12f };
-    float y = 0.0f;
-    float xL = -0.9f;
-    float xR = 0.9f;
-    float z = -0.5f;
+    float    y = 0.0f;
+    float    xL = -0.9f;
+    float    xR = 0.9f;
+    float    z = -0.5f;
 
     XMMATRIX rot = XMMatrixRotationY(angle_);
-
     XMMATRIX w0 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(xL, y, z);
     XMMATRIX w1 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(xR, y, z);
     XMMATRIX w2 = XMMatrixScaling(s.x, s.y, s.z) * rot * XMMatrixTranslation(0.0f, y, z);
@@ -1135,6 +1144,7 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     objCB[1] = numPointLights_;
     objCB[2] = numSpotLights_;
 
+    // ---------- shadow pass (только кубы) ----------
     {
         auto toDepth = CD3DX12_RESOURCE_BARRIER::Transition(
             shadowMap.Get(),
@@ -1161,14 +1171,6 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
     list->ClearDepthStencilView(
         shadowDSV, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-    // конусы (0..2)
-    list->IASetVertexBuffers(0, 1, &vbv);
-    list->IASetIndexBuffer(&ibv);
-    objCB[0] = 0u;
-    list->SetGraphicsRoot32BitConstants(2, 3, objCB, 0);
-    list->DrawIndexedInstanced(indexCount, 3, 0, 0, 0);
-
-    // кубы (7,8)
     list->IASetVertexBuffers(0, 1, &cubeVBV);
     list->IASetIndexBuffer(&cubeIBV);
     objCB[0] = 7u;
@@ -1183,6 +1185,7 @@ void ConeScene::Render(D3D12Core& core, D3D12_CPU_DESCRIPTOR_HANDLE rtv)
         list->ResourceBarrier(1, &toSRV);
     }
 
+    // ---------- main pass ----------
     list->SetPipelineState(pso.Get());
     list->RSSetViewports(1, &vpFull);
     list->RSSetScissorRects(1, &sc);
